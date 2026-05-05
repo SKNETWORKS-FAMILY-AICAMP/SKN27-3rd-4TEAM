@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+
+# 환경
+.env
+.env.*
+.venv
+venv/
+
+# data
+# data/
+# *.csv
+# *.json
+# *.parquet
+# *.pkl
+
+# IDE
+.vscode/
+.idea/
+*.DS_Store
+
+# API 키, secrets
+
+# ML 
+
+# 로그
+logs/
+*.log
+
+# build 
+build/
+dist/
+*.egg-info/
