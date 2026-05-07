@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${JEONSE_DB_NAME:-jeonse_fraud_analysis}
+      POSTGRES_USER: ${JEONSE_DB_USER:-jeonse_user}
+      POSTGRES_PASSWORD: ${JEONSE_DB_PASSWORD:-jeonse_password}
+    ports:
+      - "${JEONSE_DB_HOST_PORT:-5432}:5432"
+    volumes:
+      - jeonse_postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  jeonse_postgres_data:
