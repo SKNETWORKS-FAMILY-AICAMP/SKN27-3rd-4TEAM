@@ -16,6 +16,8 @@ data/
 *.json
 *.parquet
 *.pkl
+*.pdf
+*.hwp
 
 # IDE
 .vscode/

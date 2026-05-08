@@ -1,20 +1,75 @@
 services:
+
+  # =============================================
+  # PostgreSQL DB 컨테이너
+  # =============================================
   db:
     image: postgres:16-alpine
+    container_name: jeonse_db
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ${JEONSE_DB_NAME:-jeonse_fraud_analysis}
-      POSTGRES_USER: ${JEONSE_DB_USER:-jeonse_user}
-      POSTGRES_PASSWORD: ${JEONSE_DB_PASSWORD:-jeonse_password}
+      POSTGRES_DB: jeonse_risk
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "${JEONSE_DB_HOST_PORT:-5432}:5432"
+      - "5432:5432"
     volumes:
-      - jeonse_postgres_data:/var/lib/postgresql/data
-      - ./database/schema/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U postgres -d jeonse_risk"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
+
+  # =============================================
+  # 파이프라인 컨테이너 (최초 CSV 적재, 한 번만 실행)
+  # =============================================
+  pipeline:
+    build: .
+    container_name: jeonse_pipeline
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: jeonse_risk
+      DB_USER: postgres
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./rag/scripts:/app/scripts
+      - ./docs:/app/docs
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "scripts/preprocess_load.py"]
+
+  # =============================================
+  # 배치 컨테이너 (매주 월요일 오전 6시 자동 실행)
+  # =============================================
+  batch:
+    build: .
+    container_name: jeonse_batch
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: jeonse_risk
+      DB_USER: postgres
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./rag/scripts:/app/scripts
+      - ./docs:/app/docs
+      - ./batch.sh:/app/batch.sh
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["cron", "-f"]
 
 volumes:
-  jeonse_postgres_data:
+  postgres_data:
