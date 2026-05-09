@@ -45,3 +45,9 @@ alembic==1.15.2
 streamlit==1.57.0
 python-dotenv==1.1.0
 tqdm==4.67.3
+
+# =====================
+# Embedding
+# =====================
+sentence-transformers==5.1.2
+langchain-huggingface==1.0.1
