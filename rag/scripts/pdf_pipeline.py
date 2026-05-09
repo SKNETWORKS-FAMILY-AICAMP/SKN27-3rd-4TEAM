@@ -24,7 +24,6 @@ if hasattr(sys.stdout, 'reconfigure'):
 print("파이프라인 준비 중...")
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
-from tqdm import tqdm
 
 from langchain_community.document_loaders import PyPDFLoader, PDFPlumberLoader
 from langchain_pymupdf4llm import PyMuPDF4LLMLoader
@@ -126,7 +125,7 @@ def load_pdf(filepath: str) -> list:
         return docs
 
     except Exception as e:
-        print(f"  ⚠️  로드 실패 ({os.path.basename(filepath)}): {e}")
+        print(f"  [WARNING] 로드 실패 ({os.path.basename(filepath)}): {e}")
         return []
 
 
@@ -186,7 +185,7 @@ def load_to_db(chunks: list, filepath: str) -> int:
     ]
 
     if not rows:
-        print(f"  ⚠️  유효한 청크 없음: {filename}")
+        print(f"  [WARNING] 유효한 청크 없음: {filename}")
         cur.close()
         conn.close()
         return 0
@@ -205,7 +204,7 @@ def load_to_db(chunks: list, filepath: str) -> int:
         conn.commit()
     except Exception as e:
         conn.rollback()
-        print(f"  ❌ 적재 실패 - 롤백: {e}")
+        print(f"  [ERROR] 적재 실패 - 롤백: {e}")
         return 0
     finally:
         cur.close()
@@ -222,7 +221,7 @@ def run(pdf_dir: str = "docs/pdf"):
     pdf_files  = list(set(pdf_files))
 
     if not pdf_files:
-        print(f"❌ PDF 파일 없음: {pdf_dir}")
+        print(f"[ERROR] PDF 파일 없음: {pdf_dir}")
         return
 
     print(f"=== PDF 파이프라인 시작: 총 {len(pdf_files)}개 ===\n")
@@ -237,12 +236,11 @@ def run(pdf_dir: str = "docs/pdf"):
     print("기존 rag_documents 데이터 삭제 완료\n")
 
     total_chunks = 0
-    pbar = tqdm(sorted(pdf_files), desc="PDF 파이프라인")
 
-    for filepath in pbar:
+    for i, filepath in enumerate(sorted(pdf_files), 1):
         filename = os.path.basename(filepath)
         pdf_type = classify_pdf(filepath)
-        pbar.set_postfix_str(f"파일: {filename[:20]}...")
+        print(f"[{i}/{len(pdf_files)}] {filename}")
 
         docs   = load_pdf(filepath)
         if not docs:
@@ -251,6 +249,7 @@ def run(pdf_dir: str = "docs/pdf"):
         chunks = split_docs(docs, pdf_type)
         count  = load_to_db(chunks, filepath)
         total_chunks += count
+        print(f"  [SUCCESS] {len(docs)}페이지 -> {count}청크 적재")
 
     print(f"=== 완료! 총 {total_chunks}개 청크 적재 ===")
 
