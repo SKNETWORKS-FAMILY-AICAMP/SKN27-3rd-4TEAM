@@ -40,10 +40,22 @@ def _clean_text(text: str) -> str:
     text = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '', text)
     text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
     
-    # 페이지 번호 또는 단순 숫자만 있는 줄 제거 (예: " 1 ", " - 1 - ")
-    text = re.sub(r'^\s*[-]*\s*\d+\s*[-]*\s*$', '', text, flags=re.MULTILINE)
+    # 페이지 번호 및 표기 제거 (한국어 조사 '23p에서' 등이 붙는 경우 고려하여 \b 대신 더 정교한 패턴 사용)
+    text = re.sub(r'^\s*[-]*\s*\d+\s*[-]*\s*$', '', text, flags=re.MULTILINE) # 숫자만 있는 줄
+    text = re.sub(r'(?<![a-zA-Z])[pP]\.?\s*\d+(?![a-zA-Z])', '', text) # p74, p. 74 등 (영어 알파벳과 겹치지 않게)
+    text = re.sub(r'[Pp]age\s?\d+', '', text)    # Page 74 등
+    text = re.sub(r'(?<![a-zA-Z])\d+\s*[pP](?![a-zA-Z])', '', text)   # 23p, 23 p 등 (23p에서 처럼 조사가 붙어도 지워짐)
+    text = re.sub(r'\d+\s*(?:페이지|쪽)', '', text) # 23페이지, 23쪽 등
     
-    # 반복적으로 나타나는 헤더/푸터 문구 제거 (필요시 리스트 추가)
+    # 띄어쓰기 사이에 혼자 둥둥 떠다니는 무의미한 숫자 패턴 제거 (예: " 27-2 ", " 1-1 ")
+    # 단, 123-45번지 처럼 뒤에 글자가 붙거나, 2024-05-10 처럼 긴 날짜 형식은 보호됨
+    text = re.sub(r'(?<!\S)\d{1,3}-\d{1,3}(?!\S)', '', text)
+    
+    # 목차 기호 및 단독 로마자 제거 (예: "I.", "II.", "IV.")
+    # 단, 영어 단어 I와 헷갈리지 않게 문장 부호가 같이 있는 경우나 단독으로 쓰인 경우만 처리
+    text = re.sub(r'\b(?:I{1,3}|IV|V|VI{1,3}|IX|X)\.\s', ' ', text)
+    
+    # 반복적으로 나타나는 헤더/푸터 문구 제거
     blacklist = [
         "전세사기 피해 예방을 위한 전세계약 제대로 알고 하기",
         "전세사기피해 예방을 위한 전세계약 제대로 알고 하기",
@@ -51,6 +63,9 @@ def _clean_text(text: str) -> str:
     ]
     for phrase in blacklist:
         text = text.replace(phrase, "")
+    
+    # 의미 없는 단일 기호나 짧은 노이즈 제거 (예: " _ ", " . ")
+    text = re.sub(r'\s+[\._-]\s+', ' ', text)
 
     # PDF 추출 시 발생하는 CID: 형태의 불필요한 기호 제거
     text = re.sub(r'\(cid:\d+\)', '', text)
