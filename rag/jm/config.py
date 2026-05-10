@@ -1,4 +1,4 @@
-﻿import os
+import os
 from dataclasses import dataclass
 
 # RAG 설정
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 class RagConfig:
     collection: str
     embedding_model: str
+    llm_model: str
     chunk_size: int
     chunk_overlap: int
     pg_host: str
@@ -19,6 +20,7 @@ def load_config() -> RagConfig:
     return RagConfig(
         collection=os.getenv("RAG_COLLECTION", "jeonse-rag"),
         embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
+        llm_model=os.getenv("RAG_LLM_MODEL", "gpt-4o-mini"),
         chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "900")),
         chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "150")),
         pg_host=os.getenv("DB_HOST", "localhost"),
