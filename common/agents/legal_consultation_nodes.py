@@ -1,0 +1,287 @@
+﻿"""Agent nodes for the case-based legal consultation graph."""
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Any
+
+from common.schemas.legal_consultation import (
+    CitedCase,
+    CitedLaw,
+    EvidenceQuality,
+    ExternalSource,
+    LegalConsultationState,
+)
+from common.schemas.shared import AgentTrace, ContextPack
+from common.tools.adaptive_rag import adaptive_rag
+from common.tools.external_search import search_external_sources
+from common.tools.llm import extract_json_object, ollama_generate
+
+DISCLAIMER = "본 답변은 법률 자문이 아니라 판례와 공공자료 기반 정보 제공입니다. 실제 판단은 계약서 문구와 증거에 따라 달라질 수 있습니다."
+
+
+def legal_intake_agent(state: LegalConsultationState) -> LegalConsultationState:
+    question = (state.get("question") or "").strip()
+    errors = list(state.get("errors", []))
+    if not question:
+        errors.append("question is required")
+    normalized = _build_query(question, state.get("related_finding"), state.get("contract_context"))
+    return _merge(state, question=question, normalized_query=normalized, errors=errors, trace=_trace("Legal Intake Agent", "normalize_legal_question", {"question": question}, {"has_error": bool(errors)}))
+
+
+def question_classifier_agent(state: LegalConsultationState) -> LegalConsultationState:
+    question = state.get("normalized_query", state.get("question", ""))
+    qtype = _classify_question(question)
+    return _merge(state, question_type=qtype, trace=_trace("Question Classifier Agent", "classify_question_type", {"question": state.get("question", "")}, {"question_type": qtype}))
+
+
+def internal_case_retriever_agent(state: LegalConsultationState) -> LegalConsultationState:
+    pack = adaptive_rag(
+        "legal_case_search",
+        state.get("normalized_query", state.get("question", "")),
+        filters={"doc_type": ["case", "judgement"], "question_type": state.get("question_type")},
+        top_k=5,
+    )
+    return _merge(state, internal_case_context=pack, trace=_trace("Internal Case Retriever Agent", "retrieve_internal_cases", {"question_type": state.get("question_type")}, {"context_count": len(pack.contexts)}))
+
+
+def internal_law_guide_retriever_agent(state: LegalConsultationState) -> LegalConsultationState:
+    pack = adaptive_rag(
+        "legal_law_guide_search",
+        state.get("normalized_query", state.get("question", "")),
+        filters={"doc_type": ["law", "guide", "checklist"], "question_type": state.get("question_type")},
+        top_k=5,
+    )
+    return _merge(state, internal_law_context=pack, trace=_trace("Internal Law/Guide Retriever Agent", "retrieve_internal_law_guides", {"question_type": state.get("question_type")}, {"context_count": len(pack.contexts)}))
+
+
+def evidence_grader_agent(state: LegalConsultationState) -> LegalConsultationState:
+    case_pack = state.get("internal_case_context")
+    law_pack = state.get("internal_law_context")
+    case_count = len(case_pack.contexts) if case_pack else 0
+    law_count = len(law_pack.contexts) if law_pack else 0
+
+    if case_count >= 1 and law_count >= 1:
+        quality = EvidenceQuality(True, 0.82, "MIXED", "internal case and law/guide evidence found")
+    elif case_count >= 1:
+        quality = EvidenceQuality(True, 0.74, "INTERNAL_CASE", "internal case evidence found")
+    elif law_count >= 2:
+        quality = EvidenceQuality(True, 0.68, "INTERNAL_LAW", "multiple internal law/guide evidence found")
+    elif law_count >= 1:
+        quality = EvidenceQuality(False, 0.45, "INTERNAL_LAW", "only one internal law/guide context found; external support recommended")
+    else:
+        quality = EvidenceQuality(False, 0.0, "INSUFFICIENT", "no useful internal evidence found")
+
+    return _merge(state, evidence_quality=quality, needs_external_search=not quality.sufficient, basis_type=quality.basis_type, confidence=_confidence_from_quality(quality.score), trace=_trace("Evidence Grader Agent", "grade_internal_evidence", {"case_count": case_count, "law_count": law_count}, asdict(quality)))
+
+
+def external_search_agent(state: LegalConsultationState) -> LegalConsultationState:
+    if not state.get("needs_external_search", False):
+        return _merge(state, used_external_search=False, external_sources=[], trace=_trace("External Search Agent", "skip_external_search", {}, {"reason": "internal evidence sufficient"}))
+
+    sources = search_external_sources(state.get("normalized_query", state.get("question", "")), state.get("question_type", "UNKNOWN"))
+    return _merge(state, used_external_search=True, external_sources=sources, basis_type="EXTERNAL_SOURCE" if state.get("basis_type") == "INSUFFICIENT" else "MIXED", trace=_trace("External Search Agent", "collect_external_sources", {"question_type": state.get("question_type")}, {"source_count": len(sources)}))
+
+
+def citation_collector_agent(state: LegalConsultationState) -> LegalConsultationState:
+    cited_cases = _extract_cases(state.get("internal_case_context"))
+    cited_laws = _extract_laws(state.get("internal_law_context"))
+    return _merge(state, cited_cases=cited_cases, cited_laws=cited_laws, trace=_trace("External Citation Collector Agent", "structure_citations", {}, {"case_count": len(cited_cases), "law_count": len(cited_laws), "external_count": len(state.get("external_sources", []))}))
+
+
+def case_based_answer_agent(state: LegalConsultationState) -> LegalConsultationState:
+    answer = _generate_answer(state)
+    actions = _recommended_actions(state)
+    return _merge(state, answer_draft=answer, recommended_actions=actions, trace=_trace("Case-Based Answer Agent", "draft_case_based_answer", {"basis_type": state.get("basis_type")}, {"answer_length": len(answer), "action_count": len(actions)}))
+
+
+def legal_guardrail_agent(state: LegalConsultationState) -> LegalConsultationState:
+    guarded = _apply_guardrails(state.get("answer_draft", ""))
+    if state.get("used_external_search"):
+        guarded = "내부 자료에서 충분한 근거를 찾지 못해 외부 공신력 자료를 함께 참고했습니다.\n\n" + guarded
+    if DISCLAIMER not in guarded:
+        guarded = guarded.rstrip() + "\n\n" + DISCLAIMER
+    return _merge(state, final_answer=guarded, disclaimer=DISCLAIMER, trace=_trace("Legal Guardrail Agent", "remove_overconfident_legal_advice", {}, {"answer_length": len(guarded)}))
+
+
+def consultation_report_agent(state: LegalConsultationState) -> LegalConsultationState:
+    report_trace = _trace("Consultation Report Agent", "package_legal_consultation_report", {}, {"sections": ["answer", "basis_type", "used_external_search", "confidence", "question_type", "cited_cases", "cited_laws", "external_sources", "recommended_actions", "disclaimer", "agent_trace"]})
+    full_trace = list(state.get("agent_trace", [])) + [report_trace]
+    report = {
+        "answer": state.get("final_answer", ""),
+        "basis_type": state.get("basis_type", "INSUFFICIENT"),
+        "used_external_search": state.get("used_external_search", False),
+        "confidence": state.get("confidence", "LOW"),
+        "question_type": state.get("question_type", "UNKNOWN"),
+        "cited_cases": [asdict(case) for case in state.get("cited_cases", [])],
+        "cited_laws": [asdict(law) for law in state.get("cited_laws", [])],
+        "external_sources": [asdict(source) for source in state.get("external_sources", [])],
+        "recommended_actions": state.get("recommended_actions", []),
+        "disclaimer": state.get("disclaimer", DISCLAIMER),
+        "agent_trace": [asdict(trace) for trace in full_trace],
+    }
+    return _merge(state, report=report, trace=report_trace)
+
+
+def _classify_question(question: str) -> str:
+    try:
+        raw = ollama_generate(
+            "다음 전세계약 법률 질문의 유형을 JSON으로만 분류해. "
+            "가능한 type: SPECIAL_CLAUSE, DEPOSIT_RETURN, OPPOSING_POWER, PREFERRED_PAYMENT, REGISTRY_RISK, SENIOR_TENANT, TRUST_REGISTRATION, TAX_ARREARS, JEONSE_FRAUD_CASE, GENERAL_LEGAL_INFO, UNKNOWN\n"
+            f"질문: {question[:1500]}",
+            system="너는 한국 전세계약 법률 질문 분류기다. JSON만 반환한다.",
+            temperature=0.0,
+        )
+        data = extract_json_object(raw)
+        qtype = str(data.get("type", "UNKNOWN"))
+        if qtype in {"SPECIAL_CLAUSE", "DEPOSIT_RETURN", "OPPOSING_POWER", "PREFERRED_PAYMENT", "REGISTRY_RISK", "SENIOR_TENANT", "TRUST_REGISTRATION", "TAX_ARREARS", "JEONSE_FRAUD_CASE", "GENERAL_LEGAL_INFO", "UNKNOWN"}:
+            return qtype
+    except Exception:
+        pass
+
+    text = question.lower()
+    if "보증금" in question and ("반환" in question or "돌려" in question):
+        return "DEPOSIT_RETURN"
+    if "특약" in question or "조항" in question:
+        return "SPECIAL_CLAUSE"
+    if "전입" in question or "대항력" in question:
+        return "OPPOSING_POWER"
+    if "확정일자" in question or "우선변제" in question:
+        return "PREFERRED_PAYMENT"
+    if "근저당" in question or "등기" in question:
+        return "REGISTRY_RISK"
+    if "신탁" in question:
+        return "TRUST_REGISTRATION"
+    if "세금" in question or "체납" in question:
+        return "TAX_ARREARS"
+    return "UNKNOWN"
+
+
+def _generate_answer(state: LegalConsultationState) -> str:
+    cases = state.get("cited_cases", [])
+    laws = state.get("cited_laws", [])
+    external = state.get("external_sources", [])
+    question = state.get("question", "")
+
+    try:
+        prompt = _answer_prompt(state)
+        raw = ollama_generate(prompt, system="너는 전세계약 판례 근거 설명 상담사다. 단정적 법률 자문은 피하고 근거 중심으로 답한다.", temperature=0.2)
+        if raw.strip():
+            return raw.strip()
+    except Exception:
+        pass
+
+    lines = [f"질문하신 내용은 {state.get('question_type', 'UNKNOWN')} 유형의 전세계약 쟁점으로 볼 수 있습니다."]
+    if cases:
+        case = cases[0]
+        lines.append(f"내부 판례 자료에서 '{case.issue or case.summary}' 관련 근거가 확인되었습니다.")
+        lines.append(f"{case.court or '내부 판례 자료'} {case.case_number or ''} 자료의 취지는 {case.summary}")
+        lines.append(f"이 사안과의 관련성은 {case.relevance}")
+    if laws:
+        law = laws[0]
+        lines.append(f"법령/가이드 근거로는 {law.title} 자료가 함께 확인됩니다. {law.summary}")
+    if external:
+        lines.append("내부 자료가 충분하지 않아 외부 공신력 자료도 함께 참고했습니다.")
+        lines.append(f"참고 외부 자료: {external[0].publisher} - {external[0].title}")
+    lines.append("따라서 임차인에게 유리한 근거로 활용될 가능성은 있으나, 실제 판단은 계약서 문구와 증거관계에 따라 달라질 수 있습니다.")
+    return "\n\n".join(lines)
+
+
+def _answer_prompt(state: LegalConsultationState) -> str:
+    return f"""
+사용자 질문에 대해 판례/법령 근거 중심으로 한국어 답변을 작성해.
+금지: 승소 가능합니다, 무조건 이깁니다, 법적으로 문제 없습니다, 반드시 돌려받을 수 있습니다.
+반드시 포함: 결론 요약, 근거 판례/법령, 사안과의 관련성, 추가 확인사항, 법률 자문 아님 고지.
+
+질문: {state.get('question')}
+질문 유형: {state.get('question_type')}
+관련 finding: {state.get('related_finding')}
+계약 문맥: {state.get('contract_context')}
+내부 판례: {[asdict(case) for case in state.get('cited_cases', [])]}
+내부 법령/가이드: {[asdict(law) for law in state.get('cited_laws', [])]}
+외부 자료 사용 여부: {state.get('used_external_search')}
+외부 자료: {[asdict(source) for source in state.get('external_sources', [])]}
+""".strip()
+
+
+def _apply_guardrails(answer: str) -> str:
+    replacements = {
+        "승소 가능합니다": "임차인 주장이 받아들여질 가능성을 뒷받침하는 근거가 있습니다",
+        "무조건 이깁니다": "유리한 근거가 있을 수 있습니다",
+        "법적으로 문제 없습니다": "분쟁 가능성이 낮다고 단정하기는 어렵습니다",
+        "반드시 돌려받을 수 있습니다": "반환 청구 근거로 활용될 가능성이 있습니다",
+        "이 계약은 무효입니다": "이 계약 조항은 다툼의 여지가 있습니다",
+    }
+    guarded = answer
+    for bad, safe in replacements.items():
+        guarded = guarded.replace(bad, safe)
+    return guarded
+
+
+def _extract_cases(pack: ContextPack | None) -> list[CitedCase]:
+    if not pack:
+        return []
+    cases: list[CitedCase] = []
+    for context in pack.contexts:
+        if context.doc_type not in {"case", "judgement"}:
+            continue
+        cases.append(CitedCase(
+            court=context.metadata.get("court"),
+            case_number=context.metadata.get("case_number"),
+            issue=context.metadata.get("issue"),
+            summary=context.text,
+            relevance="사용자 질문과 같은 전세계약 위험 쟁점에 관한 내부 판례/사례 근거입니다.",
+            source_id=context.source_id,
+        ))
+    return cases
+
+
+def _extract_laws(pack: ContextPack | None) -> list[CitedLaw]:
+    if not pack:
+        return []
+    laws: list[CitedLaw] = []
+    for context in pack.contexts:
+        if context.doc_type not in {"law", "guide", "checklist"}:
+            continue
+        title = context.metadata.get("law") or context.title
+        laws.append(CitedLaw(title=title, summary=context.text, source_id=context.source_id))
+    return laws
+
+
+def _recommended_actions(state: LegalConsultationState) -> list[str]:
+    actions = ["계약서 원문 특약과 반환 기한을 명확히 확인하세요."]
+    if state.get("question_type") in {"DEPOSIT_RETURN", "SPECIAL_CLAUSE"}:
+        actions.append("보증금 반환 기한과 지연 시 책임을 특약에 명확히 쓰도록 수정 요청하세요.")
+    actions.append("등기부등본, 임대인 신분, 체납 여부 등 계약서 외 자료를 함께 확인하세요.")
+    actions.append("분쟁 가능성이 크면 대한법률구조공단, 주택임대차분쟁조정위원회 또는 변호사 상담을 권장합니다.")
+    return actions
+
+
+def _build_query(question: str, related_finding: dict[str, Any] | None, contract_context: dict[str, Any] | None) -> str:
+    parts = [question]
+    if related_finding:
+        parts.append(f"관련 진단 항목: {related_finding}")
+    if contract_context:
+        parts.append(f"계약 문맥: {contract_context}")
+    return "\n".join(parts)
+
+
+def _confidence_from_quality(score: float) -> str:
+    if score >= 0.75:
+        return "HIGH"
+    if score >= 0.45:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _merge(state: LegalConsultationState, *, trace: AgentTrace | None = None, **updates: Any) -> LegalConsultationState:
+    next_state: LegalConsultationState = dict(state)
+    next_state.update(updates)
+    if trace:
+        traces = list(next_state.get("agent_trace", []))
+        traces.append(trace)
+        next_state["agent_trace"] = traces
+    return next_state
+
+
+def _trace(agent: str, action: str, inputs: dict[str, Any], outputs: dict[str, Any]) -> AgentTrace:
+    return AgentTrace(agent=agent, action=action, inputs=inputs, outputs=outputs)

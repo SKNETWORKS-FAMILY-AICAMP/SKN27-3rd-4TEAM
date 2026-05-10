@@ -1,392 +1,449 @@
-﻿# 전세계약 위험 진단 멀티 에이전트 설계
+﻿# 전세계약 진단 LangGraph / Multi-Agent 설계
 
-## 1. 설계 원칙
+## 1. 담당 범위
 
-이 프로젝트는 **전세계약서 1개만 입력**으로 받아 전세사기 위험을 진단한다. 등기부등본, 중개대상물 확인설명서, 전입세대확인서 등은 직접 업로드 분석 대상이 아니라, 계약서만으로 확인할 수 없는 필수 확인 항목으로 리포트와 Q&A에서 안내한다.
+이 모듈은 RAG 내부 검색 로직을 직접 구현하지 않고, 전세계약 진단을 위한 LangGraph 기반 멀티 에이전트 실행 흐름을 담당한다.
 
-```text
-분석 리포트 생성 = 통제된 LangGraph 파이프라인
-사용자 자유 질문 = ReAct Q&A Agent
-RAG/시세 조회 = MCP로 분리 가능한 외부 도구
-점수 계산 = 규칙 기반
-LLM 역할 = 추출, 해석, 쉬운 말 설명
-```
+- 입력: 전세계약서 1개(PDF/TXT, OCR은 추후 확장)
+- 출력: 위험 점수, 위험 등급, 위험 요인, 시세 분석, 추가 확인 체크리스트, RAG 근거 요약
+- RAG 연결: `common.tools.adaptive_rag.adaptive_rag()` 인터페이스를 호출한다.
+- 법률자문 AI 상담사 그래프는 후순위 확장으로 분리한다.
 
-## 2. 전체 Graph 구조
+## 2. 전체 그래프
 
-### Analysis Graph
-
-```text
-START
-→ Contract Intake
-→ Contract Parser
-→ Contract Field Extraction
-→ Special Clause Analyzer
-→ Market Analyzer
-→ Risk Judge
-→ Report Writer
-→ END
-```
-
-현재는 Sequential Graph로 구현한다. 데이터 레이어와 노드 입출력이 안정되면 Controlled Supervisor Graph로 확장한다.
-
-### Q&A Graph
-
-```text
-START
-→ Context Loader
-→ ReAct Q&A Agent
-→ Citation Formatter
-→ END
+```mermaid
+flowchart TD
+    A["START"] --> B["Contract Intake Agent"]
+    B --> C["Contract Parser Agent"]
+    C --> D["Contract Field Extractor Agent"]
+    D --> E["Special Clause Analyzer Agent"]
+    E --> F["Market Analyzer Agent"]
+    F --> G["Required Check Analyzer Agent"]
+    G --> H["Risk Judge Agent"]
+    H --> I["Report Writer Agent"]
+    I --> J["END"]
 ```
 
 ## 3. 에이전트 목록
 
-| 에이전트 | 타입 | ReAct 여부 | MCP 사용 | 역할 |
-|---|---|---:|---:|---|
-| Contract Intake Agent | LangGraph Agent | X | X | 전세계약서 업로드 확인 |
-| Contract Parser Agent | LangGraph Agent | X | X | 계약서 PDF/이미지 텍스트 추출, OCR fallback |
-| Contract Field Extraction Agent | LangGraph Agent | X | X | 계약서 핵심 필드 구조화 |
-| Special Clause Analyzer Agent | LangGraph Agent | X | O | 위험 특약 탐지, 방어 특약 누락 확인 |
-| Market Analyzer Agent | LangGraph Agent | X | O | 실거래가 기반 시세 분석, 전세가율 산정 |
-| Risk Judge Agent | LangGraph Agent | X | X | 특약, 시세, 확인 필요 항목을 종합해 규칙 기반 위험 점수 계산 |
-| Report Writer Agent | LangGraph Agent | X | O | 최종 리포트와 체크리스트 생성 |
-| ReAct Q&A Agent | ReAct Agent | O | O | 사용자 질문에 맞는 도구를 선택해 근거 기반 답변 생성 |
+| Agent | 역할 | 가져오는 데이터 | 타입 | LLM 사용 |
+| --- | --- | --- | --- | --- |
+| Contract Intake Agent | 계약서 입력 존재 여부와 파일 형식 확인 | 사용자 업로드 계약서 경로 | Validation Agent | X |
+| Contract Parser Agent | PDF/TXT에서 계약서 텍스트 추출 | 계약서 파일 | Tool Agent | X |
+| Contract Field Extractor Agent | 임대인, 임차인, 주소, 보증금, 주택유형, 특약 구조화 | 계약서 텍스트 | Extraction Agent | O, 실패 시 regex fallback |
+| Special Clause Analyzer Agent | 위험 특약과 빠진 방어 특약 탐지 | 계약서 특약 + RAG context | RAG-using Analysis Agent | 규칙 중심, 추후 LLM 확장 |
+| Market Analyzer Agent | 전세/매매 CSV로 전세가율과 보증금 위치 분석 | `data/*.csv` | Structured Data Tool Agent | X |
+| Required Check Analyzer Agent | 계약서만으로 확인 불가능한 필수 위험 항목 생성 | 체크리스트 RAG context | RAG-using Checklist Agent | X |
+| Risk Judge Agent | 모든 finding을 합산해 위험 점수/등급 산정 | 앞선 agent 결과 | Rule Judge Agent | X |
+| Report Writer Agent | 사용자 리포트 생성 | 전체 state + RAG 근거 | Report Agent | 현재 규칙 기반, 추후 LLM 요약 가능 |
 
-## 4. Agent별 상세 설계
+## 4. RAG 연결 방식
 
-### 4.1 Contract Intake Agent
+Multi-Agent 파트는 RAG 내부 구현을 몰라도 되도록 다음 함수만 사용한다.
 
-**역할**
-
-```text
-전세계약서 업로드 여부 확인
-분석 가능 여부 판단
+```python
+adaptive_rag(
+    task_type: str,
+    query: str,
+    filters: dict,
+    top_k: int,
+) -> ContextPack
 ```
 
-**입력 데이터**
+RAG 담당자가 나중에 내부를 다음 구조로 교체할 수 있다.
 
-```text
-전세계약서 PDF/이미지
+```mermaid
+flowchart TD
+    A["Agent Query"] --> B["RAG Router"]
+    B --> C1["Contract Evidence Retriever"]
+    B --> C2["Clause Pattern Retriever"]
+    B --> C3["Legal Guide Retriever"]
+    B --> C4["Checklist Retriever"]
+    B --> C5["Market Evidence Retriever"]
+    C1 --> D["Context Merger"]
+    C2 --> D
+    C3 --> D
+    C4 --> D
+    C5 --> D
+    D --> E["Retrieval Grader"]
+    E -->|"Sufficient"| F["ContextPack"]
+    E -->|"Insufficient"| G["Query Rewriter"]
+    G --> B
 ```
 
-**출력**
+## 5. 현재 데이터 연결
 
-```text
-documents
-missing_documents
-analysis_ready
+| 데이터 | 파일 | 사용 Agent | 용도 |
+| --- | --- | --- | --- |
+| 전세 실거래가 | `data/2025_전세_종로구_통합_cleaned.csv` | Market Analyzer | 주변 전세 보증금 중앙값, 보증금 percentile 계산 |
+| 연립다세대 매매 | `data/fixed_연립다세대(매매)_실거래가_20260507195717.csv` | Market Analyzer | 추정 매매가 및 전세가율 계산 |
+| 오피스텔 매매 | `data/fixed_오피스텔(매매)_실거래가_20260507195801.csv` | Market Analyzer | 추정 매매가 및 전세가율 계산 |
+| 법령/사례/체크리스트 PDF | `docs/pdf/pdf/**` | RAG 인터페이스 | 특약 판단, 추가 확인 항목, 리포트 근거 |
+
+## 6. 계약서만 입력받는 MVP에서 중요한 한계
+
+계약서만으로는 다음 항목을 확정할 수 없다. 따라서 이 시스템은 해당 항목을 “위험 확정”이 아니라 “추가 확인 필요”로 표시한다.
+
+- 등기부 갑구/을구 권리관계
+- 임대인과 등기부 소유자 일치 여부
+- 선순위 임차인 및 선순위 보증금
+- 국세/지방세 체납
+- 신탁 등기 여부
+- 위반건축물 여부
+
+## 7. 실행 예시
+
+```powershell
+$env:ENABLE_LLM='0'
+python -m common.graphs.diagnosis_graph
 ```
 
-### 4.2 Contract Parser Agent
+Ollama를 사용할 경우 기본값은 다음과 같다.
 
-**역할**
+- `OLLAMA_BASE_URL=http://localhost:11434`
+- `OLLAMA_MODEL=gemma4:e2b`
 
-```text
-계약서 PDF 텍스트 추출
-스캔/이미지 OCR fallback
-페이지별 raw text 생성
-OCR 신뢰도 저장
-```
+## 8. 후속 수정 필요 항목
 
-**출력**
+### 8.1 실제 계약서 파싱 실패 처리 개선
 
-```text
-parsed_texts
-ocr_confidence
-```
+현재 MVP 테스트 편의를 위해 계약서 파일 경로가 없거나 PDF 파싱에 실패하면 mock 계약서 텍스트로 대체될 수 있다. 이 동작은 구조 검증용으로만 허용한다.
 
-### 4.3 Contract Field Extraction Agent
+실서비스 또는 팀 통합 단계에서는 다음과 같이 수정해야 한다.
 
-**역할**
+- 파일 경로가 없는 데모 실행에서만 mock 계약서를 사용한다.
+- 사용자가 실제 계약서 파일을 업로드했는데 파일이 없거나 파싱에 실패하면 mock으로 대체하지 않고 오류 상태를 반환한다.
+- OCR이 연결되기 전까지 JPG, PNG 같은 이미지 계약서는 입력 허용 목록에서 제외하거나, 명확히 "OCR 미지원" 오류를 반환한다.
+- OCR/RAG 연동 이후에는 추출 실패 사유와 신뢰도를 state에 기록한다.
 
-```text
-계약서 원문에서 전세 위험 진단에 필요한 필드를 구조화한다.
-```
+이 항목은 `Contract Intake Agent`, `Contract Parser Agent`, OCR 도구, RAG 문서화 로직이 연결될 때 함께 수정한다.
 
-**추출 필드**
+### 8.2 특약 분석 고도화
 
-```text
-임대인
-임차인
-목적물 주소
-보증금
-계약기간
-주택유형
-특약사항
-```
+현재 `Special Clause Analyzer Agent`는 MVP 구조 검증을 위해 일부 키워드 기반 규칙으로 위험 특약을 탐지한다. 실제 전세사기 위험 진단 품질을 높이려면 RAG 연동 후 다음 방식으로 개선한다.
 
-### 4.4 Special Clause Analyzer Agent
+- 전세사기 예방 체크리스트, 표준계약서, 법령/가이드, 사례집에서 위험 특약 패턴을 검색한다.
+- 검색된 근거 context를 기준으로 특약을 유형화한다.
+- 임차인에게 불리한 조항, 빠진 방어 특약, 수정 권장 문구를 분리해서 반환한다.
+- 단순 키워드 매칭이 아니라 조항의 의미를 LLM/structured output으로 판정한다.
+- 최종 위험 점수는 LLM이 아니라 `Risk Judge Agent`의 규칙 기반 산정으로 유지한다.
 
-**역할**
+이 항목은 RAG 담당자가 `adaptive_rag()` 내부를 실제 Adaptive/Corrective RAG로 교체한 뒤 확장한다.
+
+## 9. 현재 Common 폴더 구조
+
+진단 그래프와 향후 법률 정보 상담 그래프를 분리하기 위해 `common` 폴더를 graph별 구조로 정리한다.
 
 ```text
-계약서 특약사항을 분석한다.
-위험 특약을 탐지한다.
-방어 특약이 있는지 확인한다.
-누락된 방어 특약과 수정 권장 문구를 제안한다.
+common/
+  agents/
+    diagnosis_nodes.py              # 전세계약 진단 그래프의 agent node
+    legal_consultation_nodes.py     # 추후 법률 정보 상담 그래프 node 예정
+
+  graphs/
+    diagnosis_graph.py              # 전세계약 진단 LangGraph
+    legal_consultation_graph.py     # 추후 법률 정보 상담 LangGraph 예정
+
+  schemas/
+    shared.py                       # ContextPack, RiskFinding, AgentTrace 등 공용 schema
+    diagnosis.py                    # DiagnosisState, MarketAnalysis 등 진단 전용 schema
+    legal_consultation.py           # 추후 법률 상담 전용 schema 예정
+
+  tools/
+    adaptive_rag.py                 # RAG 팀이 교체할 RAG boundary
+    document.py                     # 계약서 PDF/TXT 파싱 및 필드 추출
+    market.py                       # 전세/매매 CSV 기반 시세 분석
+    llm.py                          # Ollama local LLM client
+    external_search.py              # 추후 외부 검색 tool 예정
 ```
 
-**가져오는 데이터**
+현재 구현된 파일은 진단 그래프 중심이며, 법률 정보 상담 그래프 파일은 다음 작업에서 추가한다.
+
+## 10. 법률 정보 상담 그래프 설계 및 구현
+
+법률 정보 상담 그래프는 전세계약 진단 그래프와 분리된 별도 LangGraph이다. 사용자가 특약, 보증금 반환, 대항력, 등기 위험 등에 대해 질문하면 내부 판례/법령 RAG를 우선 검색하고, 내부 근거가 부족할 경우 외부 공신력 자료를 함께 참고한다.
+
+### 10.1 설계 원칙
+
+- 내부 판례 RAG를 최우선으로 사용한다.
+- 내부 판례가 부족하면 내부 법령, 가이드, 체크리스트를 함께 사용한다.
+- 내부 근거가 불충분하면 외부 공신력 자료를 사용하고, 답변에 외부 자료 사용 사실을 명시한다.
+- 답변은 판례와 법령 근거를 중심으로 작성한다.
+- `승소 가능합니다`, `무조건 이깁니다` 같은 단정적 법률 자문 표현은 금지한다.
+- 최종 답변에는 법률 자문이 아니라 정보 제공이라는 고지를 포함한다.
+
+### 10.2 그래프 흐름
+
+```mermaid
+flowchart TD
+    A["START"] --> B["Legal Intake Agent"]
+    B --> C["Question Classifier Agent"]
+    C --> D["Internal Case Retriever Agent"]
+    D --> E["Internal Law/Guide Retriever Agent"]
+    E --> F["Evidence Grader Agent"]
+    F --> G["External Search Agent"]
+    G --> H["External Citation Collector Agent"]
+    H --> I["Case-Based Answer Agent"]
+    I --> J["Legal Guardrail Agent"]
+    J --> K["Consultation Report Agent"]
+    K --> L["END"]
+```
+
+현재 MVP에서는 `External Search Agent`가 내부 근거가 충분하면 검색을 건너뛰고, 내부 근거가 부족하다고 판단되면 외부 공신력 자료 후보를 반환한다. 실제 웹 검색 API는 `common/tools/external_search.py` 내부를 교체해 연결한다.
+
+### 10.3 구현 파일
 
 ```text
-계약서 특약사항
-위험 특약 패턴 RAG
-방어 특약 패턴 RAG
-전세사기 예방 A to Z
-HUG 전세사기 예방자료
-표준계약서/공공 가이드
+common/schemas/legal_consultation.py
+common/agents/legal_consultation_nodes.py
+common/graphs/legal_consultation_graph.py
+common/tools/external_search.py
 ```
 
-**주요 판단 항목**
+### 10.4 출력 구조
+
+```json
+{
+  "answer": "판례/법령 근거 기반 최종 답변",
+  "basis_type": "INTERNAL_CASE | INTERNAL_LAW | EXTERNAL_SOURCE | MIXED | INSUFFICIENT",
+  "used_external_search": false,
+  "confidence": "HIGH | MEDIUM | LOW",
+  "question_type": "DEPOSIT_RETURN",
+  "cited_cases": [],
+  "cited_laws": [],
+  "external_sources": [],
+  "recommended_actions": [],
+  "disclaimer": "본 답변은 법률 자문이 아니라 판례와 공공자료 기반 정보 제공입니다.",
+  "agent_trace": []
+}
+```
+
+### 10.5 실행 예시
+
+```powershell
+$env:ENABLE_LLM='0'
+python -m common.graphs.legal_consultation_graph
+```
+
+Ollama를 사용할 경우:
+
+```powershell
+$env:ENABLE_LLM='1'
+$env:OLLAMA_MODEL='gemma4:e2b'
+python -m common.graphs.legal_consultation_graph
+```
+
+### 10.6 RAG 연동 시 교체 지점
+
+현재 내부 판례/법령 검색은 `common/tools/adaptive_rag.py`의 mock context를 사용한다. RAG 팀이 실제 retriever를 연결할 때는 다음 task type을 구현하면 된다.
+
+- `legal_case_search`: 내부 판례/판결문 검색
+- `legal_law_guide_search`: 법령, 가이드, 사례집, 체크리스트 검색
+
+외부 자료 검색은 `common/tools/external_search.py`의 `search_external_sources()`를 실제 검색 API 또는 공공기관 검색 모듈로 교체한다.
+
+## 11. 외부 검색 API 연결 설정
+
+법률 정보 상담 그래프의 외부 검색은 `common/tools/external_search.py`에서 관리한다. 그래프 노드는 `search_external_sources()`만 호출하므로, 외부 검색 API를 바꾸더라도 LangGraph 노드는 수정하지 않는다.
+
+### 11.1 Provider 선택
+
+환경변수 `EXTERNAL_SEARCH_PROVIDER`로 provider를 선택한다.
+
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='mock'
+$env:EXTERNAL_SEARCH_PROVIDER='naver'
+$env:EXTERNAL_SEARCH_PROVIDER='serpapi'
+$env:EXTERNAL_SEARCH_PROVIDER='custom'
+```
+
+### 11.2 Mock Provider
+
+API 키 없이 동작하는 기본값이다. 실제 인터넷 검색은 하지 않고 공신력 있는 외부 자료 후보를 반환한다.
+
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='mock'
+```
+
+반환 후보:
+
+- 국가법령정보센터
+- 대한법률구조공단
+- 주택임대차분쟁조정위원회
+
+### 11.3 Naver Search API Provider
+
+Naver Search API를 사용할 경우 다음 환경변수를 설정한다.
+
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='naver'
+$env:NAVER_CLIENT_ID='발급받은-client-id'
+$env:NAVER_CLIENT_SECRET='발급받은-client-secret'
+```
+
+API 키가 없거나 호출에 실패하면 mock provider 결과로 fallback한다.
+
+### 11.4 SerpAPI Provider
+
+Google 검색 결과가 필요하면 SerpAPI를 사용할 수 있다.
+
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='serpapi'
+$env:SERPAPI_API_KEY='발급받은-api-key'
+```
+
+### 11.5 Custom Provider
+
+팀에서 별도 검색 API 서버를 만들 경우 다음 형식으로 연결한다.
+
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='custom'
+$env:EXTERNAL_SEARCH_ENDPOINT='https://example.com/search'
+```
+
+`custom` endpoint는 다음 query parameter를 받는다고 가정한다.
 
 ```text
-보증금 반환 지연 특약
-수리비 과도 전가 특약
-전입신고/확정일자 지연 특약
-추가 담보권 설정 허용 특약
-권리변동 면책 특약
-관리비 불명확 특약
-근저당 말소 특약 누락
-추가 권리설정 금지 특약 누락
+q: 검색어
+question_type: 질문 유형
+limit: 결과 개수
 ```
 
-### 4.5 Market Analyzer Agent
+응답은 `results` 또는 `items` 배열을 포함하면 된다.
 
-**역할**
-
-```text
-전세 실거래가와 매매 실거래가를 사용해 시세 위험을 분석한다.
-전세가율을 계산하고 주택유형별 분석 신뢰도를 산정한다.
+```json
+{
+  "results": [
+    {
+      "title": "자료 제목",
+      "publisher": "기관명",
+      "url": "https://...",
+      "summary": "핵심 요약"
+    }
+  ]
+}
 ```
 
-**가져오는 데이터**
+### 11.6 외부 검색 사용 표시
 
-```text
-계약서 보증금
-목적물 주소
-주택유형
-전세 실거래가
-매매 실거래가
-법정동 코드
+내부 RAG 근거가 부족해서 외부 검색을 사용하면 최종 리포트에 다음 값이 표시된다.
+
+```json
+{
+  "used_external_search": true,
+  "basis_type": "EXTERNAL_SOURCE",
+  "external_sources": []
+}
 ```
 
-**주택유형별 처리**
+답변 본문에도 “내부 자료에서 충분한 근거를 찾지 못해 외부 공신력 자료를 함께 참고했습니다.”라는 문장이 추가된다.
 
-```text
-연립다세대/오피스텔:
-유사 면적, 유사 연식, 같은 동 기준으로 비교한다.
+## 12. Mock / 실제 구현 / 후속 교체 목록
 
-단독/다가구:
-공개 데이터의 지번, 면적, 층 정보가 부족하므로 동 단위 보증금 분포만 참고한다.
-분석 신뢰도를 낮음으로 표시한다.
+오늘 구현한 그래프는 전세계약 진단 그래프와 법률 정보 상담 그래프 2개이다. 두 그래프 모두 LangGraph 흐름과 Agent trace는 실제로 동작한다. 다만 RAG 팀 연동 전까지 일부 검색 결과는 mock context를 사용한다.
+
+### 12.1 실제 구현 완료
+
+| 영역 | 상태 | 설명 |
+| --- | --- | --- |
+| LangGraph 실행 | 실제 구현 | `diagnosis_graph.py`, `legal_consultation_graph.py` 모두 실제 LangGraph로 실행됨 |
+| Agent trace | 실제 구현 | 각 Agent 실행 순서와 입출력 요약이 report에 기록됨 |
+| Ollama LLM 연동 | 실제 구현 | `gemma4:e2b` 사용 가능, `ENABLE_LLM`으로 on/off 제어 |
+| PDF/TXT 계약서 파싱 | 실제 구현 | 텍스트 PDF/TXT 파싱 가능, 한글 PDF는 PyMuPDF fallback 포함 |
+| 계약서 필드 추출 | 실제 구현 | LLM 사용, 실패 시 regex fallback |
+| CSV 시세 분석 | 실제 구현 | `data/*.csv` 기반 전세/매매 비교 및 전세가율 추정 |
+| 위험도 산정 | 실제 구현 | `Risk Judge Agent`가 rule 기반으로 점수/등급 산정 |
+| 법률 상담 guardrail | 실제 구현 | 단정적 법률 자문 표현을 완화하고 disclaimer 추가 |
+| 외부 API provider 구조 | 실제 구현 | `mock`, `naver`, `serpapi`, `custom` provider 선택 구조 구현 |
+
+### 12.2 Mock 상태인 부분
+
+| 영역 | 파일 | 현재 상태 | 후속 교체 방식 |
+| --- | --- | --- | --- |
+| 특약 분석 RAG | `common/tools/adaptive_rag.py` | `mock-checklist-special-clause` 반환 | 실제 체크리스트/가이드/법령 RAG retriever 연결 |
+| 추가 확인 항목 RAG | `common/tools/adaptive_rag.py` | `mock-checklist-required-docs` 반환 | 실제 전세사기 체크리스트/가이드 검색 연결 |
+| 리포트 근거 RAG | `common/tools/adaptive_rag.py` | `mock-guide-report` 반환 | 실제 근거 문서 chunk 출처 연결 |
+| 법률 상담 판례 RAG | `common/tools/adaptive_rag.py` | `RAG_CASE_SAMPLE` 반환 | 실제 판례 DB/vector retriever 연결 |
+| 법률 상담 법령 RAG | `common/tools/adaptive_rag.py` | `mock-law-housing-lease` 반환 | 실제 법령/가이드 retriever 연결 |
+| 외부 검색 fallback | `common/tools/external_search.py` | API 키 없으면 공공기관 후보 mock 반환 | Naver/SerpAPI/custom API key 설정 후 실제 검색 사용 |
+| 파일 없는 진단 실행 | `common/tools/document.py` | `contract_file=None`이면 `MOCK_CONTRACT_TEXT` 사용 | 실서비스에서는 실제 업로드 파일 필수로 변경 |
+
+### 12.3 아직 미구현 또는 후속 과제
+
+| 항목 | 상태 | 메모 |
+| --- | --- | --- |
+| OCR | 미구현 | 스캔 PDF, JPG, PNG 계약서 분석은 OCR 연결 후 가능 |
+| 실제 판례번호/법원명 인용 | RAG 연동 필요 | 현재는 `RAG_CASE_SAMPLE`, 실제 판례 메타데이터 연결 필요 |
+| 외부 API 실호출 | 키 설정 필요 | provider 구조는 구현됨. API key/env 설정 후 실호출 가능 |
+| RAG 근거 충분성 고도화 | 후속 개선 | 현재는 context 개수 기반. 실제로는 relevance score/metadata 기반 grading 필요 |
+| 특약 의미 기반 분석 | 후속 개선 | 현재는 일부 rule 기반. RAG+LLM structured output으로 고도화 예정 |
+| 실제 파일 파싱 실패 처리 | 후속 개선 | 현재 일부 경우 mock fallback 가능. 실서비스에서는 error state 반환 필요 |
+
+### 12.4 그래프별 상태 요약
+
+#### 전세계약 진단 그래프
+
+실제 동작:
+
+- PDF/TXT 계약서 파싱
+- LLM/regex 필드 추출
+- 특약 rule 분석
+- CSV 시세 분석
+- 계약서만으로 확인 불가능한 항목 생성
+- 위험도 산정
+- 리포트 생성
+
+Mock/후속 연결:
+
+- 특약 판단 근거 RAG
+- 체크리스트/법령/가이드 근거 RAG
+- OCR
+- 실제 파일 파싱 실패 정책
+
+#### 법률 정보 상담 그래프
+
+실제 동작:
+
+- 질문 분류
+- 내부 판례/법령 RAG 호출 흐름
+- Evidence grading
+- 내부 근거 부족 시 외부 검색 fallback 흐름
+- LLM 답변 생성
+- 법률 자문 guardrail
+- 출처/근거/report 패키징
+
+Mock/후속 연결:
+
+- 내부 판례 RAG 결과
+- 내부 법령/가이드 RAG 결과
+- 외부 검색 API key 기반 실검색
+
+### 12.5 외부 API 사용 방법 요약
+
+API 키 없이 실행하면 mock fallback이 동작한다.
+
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='mock'
 ```
 
-### 4.6 Risk Judge Agent
+Naver Search API를 사용할 경우:
 
-**역할**
-
-```text
-특약 분석 결과, 시세 분석 결과, 계약서만으로 확인할 수 없는 필수 확인 항목을 종합한다.
-규칙 기반으로 위험 점수와 위험 단계를 계산한다.
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='naver'
+$env:NAVER_CLIENT_ID='발급받은-client-id'
+$env:NAVER_CLIENT_SECRET='발급받은-client-secret'
 ```
 
-**계약서만으로 직접 판단하는 항목**
+SerpAPI를 사용할 경우:
 
-```text
-보증금
-주소
-주택유형
-계약기간
-특약 위험
-방어 특약 누락
-시세 대비 보증금 위험
-전세가율 추정
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='serpapi'
+$env:SERPAPI_API_KEY='발급받은-api-key'
 ```
 
-**계약서만으로 직접 판단하지 않는 항목**
+팀 자체 검색 API를 사용할 경우:
 
-```text
-근저당권
-압류/가압류/가처분
-신탁 등기
-임대인/소유자 일치 여부
-선순위 임차인
-전입세대확인서
-확정일자 부여현황
-국세/지방세 체납
-위반건축물 여부
+```powershell
+$env:EXTERNAL_SEARCH_PROVIDER='custom'
+$env:EXTERNAL_SEARCH_ENDPOINT='https://example.com/search'
 ```
-
-이 항목들은 위험 발생으로 단정하지 않고 `확인 필요 finding`으로 리포트에 표시한다.
-
-**예시 규칙**
-
-```text
-위험 특약 존재 +15
-높은 전세가율 +25
-시세 분석 신뢰도 낮음 +5
-등기부등본 확인 필요 +10
-임대인/소유자 일치 여부 확인 필요 +10
-단독/다가구 선순위 임차인 확인 필요 +10
-```
-
-### 4.7 Report Writer Agent
-
-**역할**
-
-```text
-분석 결과를 사용자 친화적인 리포트로 변환한다.
-법률 자문처럼 단정하지 않고, 위험 가능성과 확인 필요 사항을 설명한다.
-```
-
-**출력**
-
-```text
-report_summary
-risk_cards
-checklist
-citations
-disclaimer
-```
-
-### 4.8 ReAct Q&A Agent
-
-**역할**
-
-```text
-사용자 질문을 보고 필요한 tool을 선택한다.
-계약서 근거, RAG 지식, 시세 데이터를 조합해 답변한다.
-계약서만으로 확인할 수 없는 등기부/권리관계 질문은 확인 불가와 필요 서류를 안내한다.
-```
-
-**사용 가능한 도구**
-
-```text
-RAG Search MCP
-Market Data MCP
-Contract Evidence MCP, 선택
-get_risk_report
-get_risk_findings
-get_session_fields
-```
-
-## 5. MCP로 만들 항목
-
-### 5.1 RAG Search MCP
-
-```text
-법령, 공공 가이드, 위험 특약, 방어 특약, 등기부 확인 체크리스트 검색
-```
-
-### 5.2 Market Data MCP
-
-```text
-전세/매매 실거래가 조회
-전세가율 계산
-주택유형별 시세 분석 신뢰도 반환
-```
-
-### 5.3 Contract Evidence MCP, 선택
-
-```text
-계약서 원문/특약사항 근거 검색
-페이지/섹션 단위 citation 반환
-```
-
-## 6. 계약서 단일 입력 정책 반영 사항
-
-MVP 입력은 전세계약서만 받는다.
-
-계약서로 직접 분석하는 항목:
-
-```text
-보증금
-주소
-주택유형
-계약기간
-특약사항
-방어 특약 누락
-시세 대비 보증금 위험
-전세가율 추정
-```
-
-계약서만으로 직접 판단하지 않는 항목:
-
-```text
-근저당권
-압류/가압류/가처분
-신탁 등기
-임대인/소유자 일치 여부
-선순위 임차인
-전입세대확인서
-확정일자 부여현황
-국세/지방세 체납
-위반건축물 여부
-```
-
-위 항목들은 위험 발생으로 단정하지 않고 `확인 필요 finding`으로 리포트에 표시한다.
-
-## 7. 실제 데이터 연결 현황
-
-현재 `Market Analyzer Agent`는 `data/` 폴더의 CSV를 직접 읽어 분석한다.
-
-```text
-전세 데이터:
-data/2025_전세_종로구_통합_cleaned.csv
-
-매매 데이터:
-data/fixed_연립다세대(매매)_실거래가_20260507195717.csv
-data/fixed_오피스텔(매매)_실거래가_20260507195801.csv
-```
-
-분석 방식:
-
-```text
-1. 계약서에서 주소, 보증금, 주택유형을 추출한다.
-2. 주소에서 법정동 이름을 추출한다.
-3. 주택유형과 동 이름 기준으로 전세 거래 샘플을 필터링한다.
-4. 전세 보증금 중앙값과 사용자 보증금 분위수를 계산한다.
-5. 매매 거래 중앙값이 있으면 전세가율을 계산한다.
-6. 샘플 수와 주택유형에 따라 confidence를 low/medium/high로 표시한다.
-```
-
-`RAG Search MCP`는 DB가 설정되어 있으면 `rag_documents` 테이블을 우선 검색하고, DB가 없으면 `docs/pdf/pdf` 파일 목록과 내장 위험 패턴을 fallback으로 사용한다.
-
-## 8. 로컬 LLM 연결 현황
-
-현재 LLM은 로컬 Ollama HTTP API로 연결한다.
-
-```text
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=gemma4:e2b
-```
-
-LLM을 사용하는 노드:
-
-```text
-Contract Field Extraction Agent
-- 계약서 텍스트에서 구조화 필드 JSON 추출
-- 실패 시 regex fallback 사용
-
-Special Clause Analyzer Agent
-- 특약 문장을 위험 유형, severity, reason, recommendation으로 해석
-- 점수 계산은 하지 않고 finding 설명을 보강
-
-Report Writer Agent
-- 규칙 기반 리포트에 사용자 친화적 LLM 요약을 추가
-
-ReAct Q&A Agent
-- 검색 근거와 분석 컨텍스트를 바탕으로 자유 질문 답변 생성
-```
-
-LLM이 직접 하지 않는 일:
-
-```text
-위험 점수 계산
-전세가율 계산
-시세 샘플 필터링
-최종 위험 단계 산정
-```
-
-위 항목은 재현성과 안전성을 위해 코드/규칙 기반으로 유지한다.
