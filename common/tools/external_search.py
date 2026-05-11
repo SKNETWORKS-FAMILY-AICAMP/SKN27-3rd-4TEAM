@@ -20,6 +20,8 @@ import urllib.request
 from html import unescape
 from typing import Any
 
+from langchain_core.tools import tool
+
 from common.schemas.legal_consultation import ExternalSource
 
 DEFAULT_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "mock").strip().lower()
@@ -188,3 +190,8 @@ def _publisher_from_url(url: str | None) -> str | None:
     if "khug.or.kr" in host:
         return "HUG 주택도시보증공사"
     return host or None
+
+@tool
+def search_external_sources_tool(query: str, question_type: str, max_results: int = 3) -> list[ExternalSource]:
+    """Search trusted external legal/lease sources with provider fallback support."""
+    return search_external_sources(query=query, question_type=question_type, max_results=max_results)

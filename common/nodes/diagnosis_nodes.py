@@ -1,18 +1,20 @@
-﻿"""LangGraph node functions for the jeonse diagnosis workflow."""
+"""LangGraph state nodes for the jeonse diagnosis workflow."""
 from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+
+from common.agents.react_agent_factory import invoke_react_agent
 from common.schemas.diagnosis import DiagnosisState
 from common.schemas.shared import AgentTrace, ContextPack, RiskFinding
-from common.tools.adaptive_rag import adaptive_rag
+from common.tools.adaptive_rag import adaptive_rag, adaptive_rag_tool
 from common.tools.document import extract_contract_fields, parse_contract_file
 from common.tools.market import analyze_market
 
 
-def contract_intake_agent(state: DiagnosisState) -> DiagnosisState:
+def contract_intake_node(state: DiagnosisState) -> DiagnosisState:
     file_path = state.get("contract_file")
     missing = list(state.get("missing_inputs", []))
     errors = list(state.get("errors", []))
@@ -27,21 +29,32 @@ def contract_intake_agent(state: DiagnosisState) -> DiagnosisState:
     return _merge(state, analysis_ready=not errors, missing_inputs=missing, errors=errors, trace=_trace("Contract Intake Agent", "validate_contract_input", {"contract_file": file_path}, {"analysis_ready": not errors}))
 
 
-def contract_parser_agent(state: DiagnosisState) -> DiagnosisState:
+def contract_parser_node(state: DiagnosisState) -> DiagnosisState:
     text, pages, confidence = parse_contract_file(state.get("contract_file"))
     return _merge(state, contract_text=text, page_texts=pages, ocr_confidence=confidence, trace=_trace("Contract Parser Agent", "parse_pdf_or_text", {"contract_file": state.get("contract_file")}, {"text_length": len(text), "pages": len(pages)}))
 
 
-def contract_field_extractor_agent(state: DiagnosisState) -> DiagnosisState:
+def contract_field_extractor_node(state: DiagnosisState) -> DiagnosisState:
     fields = extract_contract_fields(state.get("contract_text", ""))
     return _merge(state, contract_fields=fields, trace=_trace("Contract Field Extractor Agent", "extract_structured_fields", {}, {"fields": fields}))
 
 
-def special_clause_analyzer_agent(state: DiagnosisState) -> DiagnosisState:
+def special_clause_analysis_node(state: DiagnosisState) -> DiagnosisState:
     fields = state.get("contract_fields", {})
     terms = fields.get("special_terms") or []
     query = "\n".join(str(term) for term in terms) or state.get("contract_text", "")[:1500]
     context_pack = adaptive_rag("special_clause_analysis", query, filters={"doc_type": ["checklist", "guide", "law", "case"]}, top_k=5)
+    react_summary = invoke_react_agent(
+        name="special_clause_react_agent",
+        system_prompt=(
+            "너는 전세계약 특약 위험을 판단하는 LangGraph ReAct Agent다. "
+            "반드시 adaptive_rag_tool을 사용해 체크리스트/법령/사례 근거를 확인하고, "
+            "위험 특약, 빠진 방어 특약, 수정 권장 방향을 간단히 정리한다."
+        ),
+        user_prompt=f"계약서 특약을 분석해줘.\n특약:\n{query[:2500]}",
+        tools=[adaptive_rag_tool],
+        temperature=0.1,
+    )
 
     findings: list[RiskFinding] = []
     revisions: list[str] = []
@@ -63,15 +76,18 @@ def special_clause_analyzer_agent(state: DiagnosisState) -> DiagnosisState:
 
     packs = dict(state.get("context_packs", {}))
     packs["special_clause_analysis"] = context_pack
-    return _merge(state, context_packs=packs, clause_findings=findings, missing_defensive_clauses=missing_defensive, recommended_revisions=revisions, trace=_trace("Special Clause Analyzer Agent", "analyze_special_terms_with_rag", {"term_count": len(terms)}, {"finding_count": len(findings), "missing_defensive_count": len(missing_defensive)}))
+    outputs = {"finding_count": len(findings), "missing_defensive_count": len(missing_defensive), "react_agent_used": bool(react_summary)}
+    if react_summary:
+        outputs["react_agent_summary"] = react_summary[:500]
+    return _merge(state, context_packs=packs, clause_findings=findings, missing_defensive_clauses=missing_defensive, recommended_revisions=revisions, trace=_trace("Special Clause Analyzer ReAct Agent", "analyze_special_terms_with_rag", {"term_count": len(terms)}, outputs))
 
 
-def market_analyzer_agent(state: DiagnosisState) -> DiagnosisState:
+def market_analysis_node(state: DiagnosisState) -> DiagnosisState:
     analysis, findings = analyze_market(state.get("contract_fields", {}))
     return _merge(state, market_analysis=analysis, market_findings=findings, trace=_trace("Market Analyzer Agent", "compare_jeonse_and_sale_data", asdict(analysis), {"finding_count": len(findings)}))
 
 
-def required_check_analyzer_agent(state: DiagnosisState) -> DiagnosisState:
+def required_check_node(state: DiagnosisState) -> DiagnosisState:
     fields = state.get("contract_fields", {})
     query = f"전세계약서만 입력된 상태에서 추가 확인이 필요한 위험 항목. 주소={fields.get('address')} 유형={fields.get('housing_type')}"
     context_pack = adaptive_rag("required_check_analysis", query, filters={"doc_type": ["checklist", "guide", "law"]}, top_k=5)
@@ -89,7 +105,7 @@ def required_check_analyzer_agent(state: DiagnosisState) -> DiagnosisState:
     return _merge(state, context_packs=packs, required_check_findings=findings, trace=_trace("Required Check Analyzer Agent", "list_contract_only_unknown_risks", {}, {"finding_count": len(findings)}))
 
 
-def risk_judge_agent(state: DiagnosisState) -> DiagnosisState:
+def risk_judge_node(state: DiagnosisState) -> DiagnosisState:
     findings: list[RiskFinding] = []
     findings.extend(state.get("clause_findings", []))
     findings.extend(state.get("missing_defensive_clauses", []))
@@ -109,7 +125,7 @@ def risk_judge_agent(state: DiagnosisState) -> DiagnosisState:
     return _merge(state, risk_findings=findings, risk_score=score, risk_level=level, trace=_trace("Risk Judge Agent", "aggregate_rule_based_score", {"finding_count": len(findings)}, {"risk_score": score, "risk_level": level}))
 
 
-def report_writer_agent(state: DiagnosisState) -> DiagnosisState:
+def report_writer_node(state: DiagnosisState) -> DiagnosisState:
     context_pack = adaptive_rag("report_generation", "전세계약 위험 진단 결과 리포트 작성", filters={"doc_type": ["guide", "checklist"]}, top_k=3)
     packs = dict(state.get("context_packs", {}))
     packs["report_generation"] = context_pack

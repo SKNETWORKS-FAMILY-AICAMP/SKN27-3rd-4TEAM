@@ -1,9 +1,11 @@
-﻿"""Adaptive RAG boundary for multi-agent graphs.
+"""Adaptive RAG boundary for multi-agent graphs.
 
 The RAG teammate can replace this module internals later. Agent graphs should keep
 calling adaptive_rag(task_type, query, filters, top_k) and consume ContextPack only.
 """
 from __future__ import annotations
+
+from langchain_core.tools import tool
 
 from common.schemas.shared import ContextPack, RetrievedContext, RetrievalQuality
 
@@ -14,6 +16,7 @@ TASK_SOURCE_MAP: dict[str, list[str]] = {
     "legal_basis": ["law", "case", "guide"],
     "legal_case_search": ["case", "judgement"],
     "legal_law_guide_search": ["law", "guide", "checklist"],
+    "defense_simulation_evidence": ["casebook", "guide", "law", "checklist"],
 }
 
 _FALLBACK_CONTEXTS: dict[str, list[RetrievedContext]] = {
@@ -73,6 +76,19 @@ _FALLBACK_CONTEXTS: dict[str, list[RetrievedContext]] = {
             metadata={"law": "주택임대차보호법", "issue": "보증금 반환 및 임차인 보호"},
         )
     ],
+    "defense_simulation_evidence": [
+        RetrievedContext(
+            source_id="mock-casebook-defense-simulation",
+            title="전세피해 사례집 기반 방어 훈련 기준",
+            doc_type="casebook",
+            text=(
+                "전세사기 예방 훈련에서는 등기부 직접 발급, 신탁원부 확인, 임대인 신분 및 대리권 확인, "
+                "전세가율과 보증보험 가능 여부 확인, 전입신고와 확정일자 확보, 불리한 특약 수정 요구를 "
+                "핵심 방어 행동으로 본다."
+            ),
+            score=0.73,
+        )
+    ],
     "report_generation": [
         RetrievedContext(
             source_id="mock-guide-report",
@@ -93,3 +109,9 @@ def adaptive_rag(task_type: str, query: str, filters: dict | None = None, top_k:
         reason="mock context pack; replace with real Adaptive/Corrective RAG retriever",
     )
     return ContextPack(task_type=task_type, query=query, contexts=contexts, quality=quality)
+
+
+@tool
+def adaptive_rag_tool(task_type: str, query: str, filters: dict | None = None, top_k: int = 5) -> ContextPack:
+    """Retrieve a ContextPack for a task using the configured Adaptive RAG boundary."""
+    return adaptive_rag(task_type=task_type, query=query, filters=filters, top_k=top_k)

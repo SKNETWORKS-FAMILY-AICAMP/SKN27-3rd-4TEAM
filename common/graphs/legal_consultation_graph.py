@@ -1,35 +1,39 @@
-﻿"""Case-based legal consultation graph entrypoint."""
+"""Case-based legal consultation graph entrypoint.
+
+Top-level nodes connect project state inside LangGraph. LLM judgement steps
+call create_react_agent-based sub-agents that use tools under common/tools.
+"""
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable
 
-from common.agents.legal_consultation_nodes import (
-    case_based_answer_agent,
-    citation_collector_agent,
-    consultation_report_agent,
-    evidence_grader_agent,
-    external_search_agent,
-    internal_case_retriever_agent,
-    internal_law_guide_retriever_agent,
-    legal_guardrail_agent,
-    legal_intake_agent,
-    question_classifier_agent,
+from common.nodes.legal_consultation_nodes import (
+    case_based_answer_node,
+    citation_collector_node,
+    consultation_report_node,
+    evidence_grader_node,
+    external_search_node,
+    internal_case_retriever_node,
+    internal_law_guide_retriever_node,
+    legal_guardrail_node,
+    legal_intake_node,
+    question_classifier_node,
 )
 from common.schemas.legal_consultation import LegalConsultationState
 
 NODE_SEQUENCE: list[tuple[str, Callable[[LegalConsultationState], LegalConsultationState]]] = [
-    ("legal_intake", legal_intake_agent),
-    ("question_classifier", question_classifier_agent),
-    ("internal_case_retriever", internal_case_retriever_agent),
-    ("internal_law_guide_retriever", internal_law_guide_retriever_agent),
-    ("evidence_grader", evidence_grader_agent),
-    ("external_search", external_search_agent),
-    ("citation_collector", citation_collector_agent),
-    ("case_based_answer", case_based_answer_agent),
-    ("legal_guardrail", legal_guardrail_agent),
-    ("consultation_report", consultation_report_agent),
+    ("legal_intake", legal_intake_node),
+    ("question_classifier", question_classifier_node),
+    ("internal_case_retriever", internal_case_retriever_node),
+    ("internal_law_guide_retriever", internal_law_guide_retriever_node),
+    ("evidence_grader", evidence_grader_node),
+    ("external_search", external_search_node),
+    ("citation_collector", citation_collector_node),
+    ("case_based_answer", case_based_answer_node),
+    ("legal_guardrail", legal_guardrail_node),
+    ("consultation_report", consultation_report_node),
 ]
 
 
@@ -78,18 +82,26 @@ def _json_default(value):
     return str(value)
 
 
-if __name__ == "__main__":
-    result = run_legal_consultation(
-        question="보증금 반환은 다음 임차인 입주 이후에 한다는 특약이 위험한가요? 판례 근거가 있나요?",
+def run_interactive() -> LegalConsultationState:
+    print("\n[법률 정보 상담 그래프]")
+    print("질문을 입력하세요. 비워두면 기본 예시 질문으로 실행합니다.")
+    question = input("> ").strip() or "보증금 반환은 다음 임차인 입주 이후에 한다는 특약이 위험한가요? 판례 근거가 있나요?"
+
+    print("\n관련 특약/계약 문맥을 입력하세요. 비워두면 기본 예시 특약을 사용합니다.")
+    clause = input("> ").strip() or "보증금 반환은 다음 임차인 입주 이후에 한다."
+
+    return run_legal_consultation(
+        question=question,
         related_finding={
-            "code": "CLAUSE_LATE_RETURN",
-            "title": "보증금 반환 지연 가능 특약",
-            "description": "보증금 반환 시점을 과도하게 늦추는 문구는 반환 위험을 키울 수 있습니다.",
+            "code": "INTERACTIVE_LEGAL_QUESTION",
+            "title": "사용자 법률 상담 질문",
+            "description": question,
         },
-        contract_context={
-            "special_terms": ["보증금 반환은 다음 임차인 입주 이후에 한다."],
-            "deposit_amount": 9500,
-            "housing_type": "오피스텔",
-        },
+        contract_context={"special_terms": [clause]},
+        session_id="interactive-legal-session",
     )
+
+
+if __name__ == "__main__":
+    result = run_interactive()
     print(json.dumps(result.get("report", result), ensure_ascii=False, indent=2, default=_json_default))

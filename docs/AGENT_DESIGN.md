@@ -1,4 +1,4 @@
-﻿# 전세계약 진단 LangGraph / Multi-Agent 설계
+# 전세계약 진단 LangGraph / Multi-Agent 설계
 
 ## 1. 담당 범위
 
@@ -195,7 +195,7 @@ flowchart TD
 
 ```text
 common/schemas/legal_consultation.py
-common/agents/legal_consultation_nodes.py
+common/nodes/legal_consultation_nodes.py
 common/graphs/legal_consultation_graph.py
 common/tools/external_search.py
 ```
@@ -446,4 +446,482 @@ $env:SERPAPI_API_KEY='발급받은-api-key'
 ```powershell
 $env:EXTERNAL_SEARCH_PROVIDER='custom'
 $env:EXTERNAL_SEARCH_ENDPOINT='https://example.com/search'
+```
+
+## 13. Interactive 테스트 실행 방법
+
+PowerShell에서 긴 `python -c` 명령을 직접 입력하면 따옴표가 꼬이기 쉽다. 그래서 두 그래프 모두 `python -m ...` 실행 후 값을 입력하는 interactive mode를 지원한다.
+
+### 13.1 전세계약 진단 그래프
+
+```powershell
+cd "C:\Users\Playdata\Desktop\SKN27-3rd-4TEAM"
+.\.venv\Scripts\activate
+$env:ENABLE_LLM='0'
+python -m common.graphs.diagnosis_graph
+```
+
+실행 후 계약서 파일 경로를 입력한다. 비워두고 Enter를 누르면 mock 계약서로 실행된다.
+
+```text
+[전세계약 진단 그래프]
+계약서 PDF/TXT 경로를 입력하세요. 비워두면 mock 계약서로 실행합니다.
+> C:\tmp\jeonse_contract_sample_cjk.pdf
+```
+
+### 13.2 법률 정보 상담 그래프
+
+```powershell
+cd "C:\Users\Playdata\Desktop\SKN27-3rd-4TEAM"
+.\.venv\Scripts\activate
+$env:ENABLE_LLM='1'
+$env:OLLAMA_MODEL='gemma4:e2b'
+python -m common.graphs.legal_consultation_graph
+```
+
+실행 후 질문과 관련 특약/계약 문맥을 입력한다. 비워두고 Enter를 누르면 기본 예시로 실행된다.
+
+```text
+[법률 정보 상담 그래프]
+질문을 입력하세요. 비워두면 기본 예시 질문으로 실행합니다.
+> 다음 임차인이 들어와야 보증금을 돌려준다는 특약이 괜찮나요?
+
+관련 특약/계약 문맥을 입력하세요. 비워두면 기본 예시 특약을 사용합니다.
+> 보증금 반환은 다음 임차인 입주 이후에 한다.
+```
+
+빠른 테스트가 목적이면 LLM을 끄고 실행할 수 있다.
+
+```powershell
+$env:ENABLE_LLM='0'
+python -m common.graphs.legal_consultation_graph
+```
+
+## 14. RAG 연동 후 하드코딩 제거 필수 항목
+
+현재 일부 Agent에는 MVP 구조 검증을 위한 하드코딩 rule이 남아 있다. 이 rule들은 최종 판단 로직이 아니라 RAG 연결 전 임시 fallback이다. RAG 팀의 실제 retriever가 연결되면 문서 기반 판단으로 최대한 교체한다.
+
+### 14.1 반드시 교체할 하드코딩 영역
+
+| 영역 | 현재 방식 | 교체 방향 |
+| --- | --- | --- |
+| 특약 위험 판단 | `diagnosis_nodes.py`의 `risky_patterns` 키워드 rule | `adaptive_rag("special_clause_analysis")` 결과 + LLM structured output 기반 판단 |
+| 빠진 방어 특약 판단 | `잔금`, `권리변동` 문자열 포함 여부 검사 | 체크리스트/표준계약서/사례집 RAG 근거 기반으로 필요한 방어 특약 판단 |
+| 특약 수정 권장 문구 | 코드에 고정된 권장 문장 | RAG 근거와 특약 유형별 template/LLM structured output으로 생성 |
+| 법률 상담 판례 근거 | `RAG_CASE_SAMPLE` mock 판례 | 실제 판례 chunk, 법원명, 사건번호, 판결요지 metadata 사용 |
+| 법률 상담 법령 근거 | `mock-law-housing-lease` | 실제 법령/가이드 문서 chunk와 출처 metadata 사용 |
+| Evidence grading | context 개수 중심 판단 | relevance score, doc_type, metadata, chunk 내용 기반 grading |
+
+### 14.2 목표 구조
+
+RAG 연동 후 특약 분석은 다음 흐름으로 변경한다.
+
+```text
+계약서 특약
+→ adaptive_rag("special_clause_analysis")
+→ 체크리스트/표준계약서/법령/사례집/판례 context 검색
+→ LLM structured output으로 위험 유형, 근거, 수정 권장 문구 추출
+→ Risk Judge Agent가 점수만 rule 기반으로 합산
+```
+
+LLM/RAG가 담당하는 것:
+
+- 어떤 특약이 위험한지 판단
+- 어떤 문서 근거를 참고했는지 연결
+- 위험 사유 설명
+- 빠진 방어 특약 탐지
+- 수정 권장 문구 생성
+
+Rule 코드가 계속 담당하는 것:
+
+- finding 점수 합산
+- 위험 등급 산정
+- 최종 리포트 포맷팅
+- 법률 자문 guardrail
+
+### 14.3 구현 시 주의사항
+
+- 하드코딩 rule은 완전히 삭제하기보다 `RAG 결과가 비었을 때만 사용하는 fallback`으로 낮춘다.
+- 최종 리포트에는 RAG source id, 문서 제목, chunk metadata를 함께 남긴다.
+- 판례 인용은 `법원명`, `사건번호`, `쟁점`, `판결요지`, `사용자 질문과의 관련성`을 구조화해서 반환한다.
+- 위험 점수 자체는 LLM이 직접 정하지 않고, `Risk Judge Agent`가 deterministic rule로 산정한다.
+- 외부 검색 결과를 사용한 경우 `used_external_search=true`와 외부 출처 URL을 반드시 표시한다.
+
+### 14.4 완료 기준
+
+다음 조건을 만족하면 하드코딩 제거 작업이 완료된 것으로 본다.
+
+- `risky_patterns`가 메인 판단 경로에서 제거되고 fallback으로만 사용된다.
+- `special_clause_analysis`가 실제 RAG 문서 chunk를 반환한다.
+- 특약 finding에 RAG 근거 source id가 포함된다.
+- 법률 상담 답변의 `RAG_CASE_SAMPLE`이 실제 판례번호/법원명으로 대체된다.
+- 외부 자료 사용 여부가 report에 명확히 표시된다.
+
+## 15. 전세사기 방어 시뮬레이션 그래프 설계
+
+전세사기 방어 시뮬레이션 그래프는 사용자가 실제 전세피해 사례 기반 상황을 직접 방어해보는 훈련 모드이다. 기존 전세계약 진단 그래프와 법률 정보 상담 그래프와 분리된 세 번째 LangGraph로 구현한다.
+
+### 15.1 목적
+
+- 경기도 전세피해 사례집의 사례를 시나리오 seed로 활용한다.
+- 전세사기 피해예방 종합안내서의 체크리스트를 방어 행동/채점 기준으로 활용한다.
+- 전세피해법률상담사례집과 법률 정보 상담 그래프를 피드백 근거로 활용한다.
+- 사용자는 임차인 역할로 질문, 확인 요청, 특약 수정 요구 등을 입력한다.
+- AI는 위험 요소를 축소하거나 계약을 빠르게 진행하려는 임대인/중개인 역할을 연기한다.
+
+### 15.2 MVP 진행 방식
+
+MVP에서는 한 번의 그래프 실행이 현재 stage 하나를 처리한다.
+
+```text
+카테고리 선택
+→ 현재 stage 로드
+→ AI 임대인/중개인 메시지 생성
+→ 사용자 대응 입력
+→ 대응 평가
+→ stage 결과 및 next_stage_index 반환
+```
+
+프론트 또는 CLI는 `next_stage_index`를 다음 요청에 넘겨 캠페인을 이어간다.
+
+### 15.3 그래프 구조
+
+```mermaid
+flowchart TD
+    A["START"] --> B["Campaign Loader Agent"]
+    B --> C["Stage Loader Agent"]
+    C --> D["Roleplay Agent"]
+    D --> E["Input Router Agent"]
+    E --> F["Command Handler Agent"]
+    F --> G["User Action Interpreter Agent"]
+    G --> H["Defense Judge Agent"]
+    H --> I["Stage Result Agent"]
+    I --> J["Evidence Connector Agent"]
+    J --> K["Feedback Report Agent"]
+    K --> L["END"]
+```
+
+MVP에서는 조건부 edge를 복잡하게 쓰기보다, `input_type`이 command이면 `User Action Interpreter Agent`와 `Defense Judge Agent`가 skip되도록 구현한다.
+
+### 15.4 Agent 역할
+
+| Agent | 역할 |
+| --- | --- |
+| Campaign Loader Agent | 선택한 카테고리와 전체 stage 목록 로드 |
+| Stage Loader Agent | 현재 stage 정보, 숨겨진 위험, 필수 방어 행동 로드 |
+| Roleplay Agent | 임대인/중개인 역할로 위험 상황 메시지 생성 |
+| Input Router Agent | 사용자 입력이 명령어인지 방어 행동인지 분류 |
+| Command Handler Agent | `/힌트`, `/상태`, `/근거`, `/도움말`, `/포기` 처리 |
+| User Action Interpreter Agent | 사용자 발화를 방어 행동으로 해석 |
+| Defense Judge Agent | 필수 방어 행동 충족 여부 평가 |
+| Stage Result Agent | 통과/실패/게임오버/다음 stage 여부 결정 |
+| Evidence Connector Agent | 법률 정보 상담 그래프 또는 RAG 근거 연결 |
+| Feedback Report Agent | 점수, 잘한 점, 놓친 점, 다음 행동, 근거를 리포트로 패키징 |
+
+### 15.5 카테고리
+
+MVP는 5개 카테고리, 각 카테고리 2개 stage를 기본 seed로 구성한다.
+
+| 카테고리 | 포함 사례 예시 |
+| --- | --- |
+| 권리관계 은폐형 | 신탁등기 악용, 위조된 등기부등본, 임차권등기, 법정기일 확인 |
+| 명의/대리인 사기형 | 동명이인 계약, 대리권 없는 자와의 계약, 공인중개사 공모 |
+| 보증금 회수 위험형 | 무자본 갭투자, 깡통전세, 다가구 선순위 보증금 |
+| 대항력/우선변제권 허점형 | 대항력 발생시기, 전입신고 미이행, 주민등록 이전 |
+| 불리한 계약/특약 유도형 | 보증금 반환 지연 특약, 특약이 절대적이지 않은 이유 |
+
+### 15.6 명령어 시스템
+
+사용자는 일반 대응 외에 다음 명령어를 입력할 수 있다.
+
+| 명령어 | 기능 | 점수 영향 |
+| --- | --- | --- |
+| `/힌트` | 현재 stage의 핵심 확인 포인트 힌트 제공 | -5점 |
+| `/상태` | 현재 카테고리, stage, 발견한 위험, 남은 확인 항목 표시 | 감점 없음 |
+| `/근거` | 현재 stage와 관련된 사례집/법령/판례 근거 요약 | 감점 없음 |
+| `/도움말` | 사용 가능한 명령어 안내 | 감점 없음 |
+| `/포기` | 현재 stage 정답/해설 공개 | stage 실패 |
+
+### 15.7 게임오버 조건
+
+게임오버는 교육적 피드백과 함께 종료한다.
+
+즉시 게임오버:
+
+- 계약 전 확인 없이 계약/입금 진행
+- 등기부등본, 소유자, 대리권 확인을 명시적으로 거부
+- 위험 특약을 그대로 수락
+
+누적 게임오버:
+
+- `risk_exposure >= 100`
+- critical defense 2개 stage 연속 실패
+
+Stage 결과:
+
+```text
+STAGE_CLEAR: critical_defenses 중 pass_threshold 이상 탐지
+STAGE_FAILED: 턴 제한 내 critical_defenses 부족
+GAME_OVER: 위험 행동 감지 또는 누적 위험 초과
+COMPLETED: 카테고리 내 모든 stage 종료
+```
+
+### 15.8 State 초안
+
+```python
+DefenseSimulationState:
+    session_id
+    category_id
+    current_stage_index
+    user_message
+
+    campaign
+    current_stage
+    roleplay_message
+    conversation_history
+
+    input_type
+    command
+    command_response
+    hint_used_count
+
+    interpreted_actions
+    detected_defenses
+    missed_defenses
+    dangerous_actions
+
+    stage_status
+    game_status
+    risk_exposure
+    failed_stage_count
+    defense_score
+    game_over_reason
+
+    evidence_report
+    feedback
+    report
+    agent_trace
+    errors
+```
+
+### 15.9 Output 구조
+
+```json
+{
+  "category_id": "RIGHTS_CONCEALMENT",
+  "stage_id": "RIGHTS_01",
+  "stage_title": "신탁등기 악용",
+  "game_status": "STAGE_CLEAR",
+  "roleplay_message": "AI 중개인 메시지",
+  "user_message": "사용자 대응",
+  "detected_defenses": [],
+  "missed_defenses": [],
+  "dangerous_actions": [],
+  "risk_exposure": 20,
+  "defense_score": 85,
+  "command_response": null,
+  "next_stage": {
+    "stage_index": 1,
+    "title": "위조된 등기부등본"
+  },
+  "feedback": "피드백 문장",
+  "evidence_report": {},
+  "agent_trace": []
+}
+```
+
+### 15.10 구현 파일 위치
+
+```text
+common/schemas/defense_simulation.py
+common/nodes/defense_simulation_nodes.py
+common/graphs/defense_simulation_graph.py
+data/defense_scenarios.json
+```
+
+### 15.11 후속 확장
+
+- 사례집 RAG에서 시나리오 seed 자동 생성
+- stage별 다중 턴 지원
+- 힌트 난이도 단계화
+- UI에서 RPG형 진행 로그 표시
+- 사용자 대응 기록 기반 개인별 취약점 리포트 생성
+
+## 16. Agent / Tool 작성 규칙
+
+Agent와 Tool은 개념적으로 분리한다. Tool은 `@tool` 데코레이터를 사용하는 실행 가능한 기능 단위이고, Agent는 LLM, Tool, 규칙, 상태 업데이트를 조합해 판단하는 실행 주체이다. 포트폴리오에서 Agent로 보여줄 판단 단계는 `create_react_agent` 기반 LangGraph ReAct sub-agent로 구현하고, top-level graph node는 프로젝트 state를 연결하는 adapter 역할을 한다.
+
+### 16.1 기본 원칙
+
+- `common/tools/` 아래의 실제 도구 함수는 `@tool`을 사용한다.
+- `@tool` 함수에는 반드시 docstring을 작성한다.
+- `common/agents/` 아래에는 top-level graph node entrypoint와 ReAct agent 호출 로직을 둔다.
+- LLM 판단이 필요한 Agent는 `create_react_agent` 기반 sub-agent로 만들고 tool을 전달한다.
+- Graph node는 프로젝트 전용 state를 ReAct agent의 `messages` 입력/출력으로 변환하는 adapter 역할을 한다.
+- Agent를 단순히 `@tool`로 감싸서 Tool처럼 취급하지 않는다.
+- 기존에 추가했던 `*_agent_tool` wrapper 방식은 제거했으며, 신규 `defense_simulation` 구현도 이 원칙을 따른다.
+
+### 16.2 Tool 작성 예시
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def search_external_sources_tool(query: str, question_type: str, max_results: int = 3):
+    """Search trusted external legal/lease sources with provider fallback support."""
+    ...
+```
+
+### 16.3 Agent 작성 예시
+
+```python
+def legal_answer_agent(state: LegalConsultationState) -> LegalConsultationState:
+    """Use LLM and tools to produce a grounded legal information answer."""
+    context = adaptive_rag_tool.invoke({
+        "task_type": "legal_case_search",
+        "query": state["question"],
+        "filters": {"doc_type": ["case"]},
+        "top_k": 5,
+    })
+    # LLM 판단, state 업데이트
+    return state
+```
+
+### 16.4 현재 적용 상태
+
+`@tool`이 적용된 Helper Tool 파일:
+
+- `common/tools/adaptive_rag.py`
+- `common/tools/document.py`
+- `common/tools/external_search.py`
+- `common/tools/llm.py`
+- `common/tools/market.py`
+
+일반 LangGraph Agent node 파일:
+
+- `common/nodes/diagnosis_nodes.py`
+- `common/nodes/legal_consultation_nodes.py`
+
+그래프 파일은 Agent node 함수를 직접 연결한다.
+
+- `common/graphs/diagnosis_graph.py`
+- `common/graphs/legal_consultation_graph.py`
+
+새로 만들 `defense_simulation_graph`도 Agent는 node 함수로, Tool은 `@tool` 함수로 분리한다.
+
+### 16.5 현재 ReAct Agent 적용 상태
+
+현재 실제 `create_react_agent` 기반으로 동작하는 Agent는 다음과 같다.
+
+| ReAct Agent | 위치 | 사용하는 Tool | 역할 |
+| --- | --- | --- | --- |
+| `special_clause_react_agent` | `common/nodes/diagnosis_nodes.py` | `adaptive_rag_tool` | 계약서 특약 위험과 빠진 방어 특약 판단 보조 |
+| `legal_case_retriever_react_agent` | `common/nodes/legal_consultation_nodes.py` | `adaptive_rag_tool` | 사용자 질문과 관련된 내부 판례/판결문 근거 검색 |
+| `legal_law_guide_retriever_react_agent` | `common/nodes/legal_consultation_nodes.py` | `adaptive_rag_tool` | 법령, 공공 가이드, 체크리스트 근거 검색 |
+| `case_based_answer_react_agent` | `common/nodes/legal_consultation_nodes.py` | `adaptive_rag_tool`, `search_external_sources_tool` | 판례/법령/외부자료 기반 법률 정보 답변 작성 |
+
+ReAct agent 공통 생성 로직은 `common/agents/react_agent_factory.py`에 둔다. Ollama tool-calling을 위해 `langchain_ollama.ChatOllama`을 우선 사용하며, `ENABLE_REACT_AGENTS=0`이면 deterministic fallback으로 실행된다.
+
+검증 결과:
+
+```text
+create_react_agent smoke test: react_ok=True
+전세계약 진단 그래프: Special Clause Analyzer ReAct Agent react_agent_used=true
+법률상담 그래프: Internal Case Retriever ReAct Agent react_agent_used=true
+법률상담 그래프: Internal Law/Guide Retriever ReAct Agent react_agent_used=true
+```
+## 17. Node / Agent 폴더 리팩토링 적용 상태
+
+혼선을 줄이기 위해 `node`와 `agent`의 물리적 위치를 분리했다.
+
+```text
+common/graphs/                  # LangGraph entrypoint
+  diagnosis_graph.py
+  legal_consultation_graph.py
+  defense_simulation_graph.py
+
+common/nodes/                   # LangGraph state node adapter
+  diagnosis_nodes.py
+  legal_consultation_nodes.py
+  defense_simulation_nodes.py
+
+common/agents/                  # 실제 ReAct agent 생성/호출 공통 로직
+  react_agent_factory.py
+
+common/tools/                   # @tool 공개 도구와 내부 helper
+  adaptive_rag.py
+  document.py
+  external_search.py
+  llm.py
+  market.py
+```
+
+정의:
+
+- Node: LangGraph에서 state를 받아 다음 state로 넘기는 workflow 단계
+- ReAct Agent: `create_react_agent` 기반으로 LLM이 tool을 선택/호출하며 판단하는 실행 주체
+- Tool: `@tool` 데코레이터가 붙은 기능 단위
+
+기존 `*_agent` 함수명은 `*_node`로 변경했다. 발표에서는 “그래프는 node로 안정적으로 제어하고, 판단이 필요한 node 내부에서 ReAct Agent를 호출한다”고 설명한다.
+
+## 18. 전세사기 방어 RPG 구현 상태
+
+전세사기 방어 RPG는 세 번째 LangGraph로 구현했다. 한 번의 실행은 현재 stage 하나를 처리하고, 프론트엔드가 `next_stage.stage_index`를 다음 호출에 넘기면 연속 진행할 수 있다.
+
+구현 파일:
+
+```text
+common/schemas/defense_simulation.py
+common/nodes/defense_simulation_nodes.py
+common/graphs/defense_simulation_graph.py
+data/defense_scenarios.json
+```
+
+현재 카테고리:
+
+| category_id | 제목 |
+| --- | --- |
+| `RIGHTS_CONCEALMENT` | 권리관계 은폐형 |
+| `IDENTITY_AUTHORITY` | 명의/대리인 사기형 |
+| `DEPOSIT_RECOVERY` | 보증금 회수 위험형 |
+| `OPPOSING_POWER` | 대항력/우선변제권 허점형 |
+| `BAD_CLAUSE` | 불리한 계약/특약 유도형 |
+
+RPG graph node:
+
+| Node | 역할 |
+| --- | --- |
+| `campaign_loader_node` | 카테고리와 stage 목록 로드 |
+| `stage_loader_node` | 현재 stage 로드 |
+| `roleplay_node` | `defense_roleplay_react_agent` 또는 fallback으로 NPC 압박 메시지 생성 |
+| `input_router_node` | 일반 대응/명령어 분류 |
+| `command_handler_node` | `/힌트`, `/상태`, `/근거`, `/도움말`, `/포기` 처리 |
+| `user_action_interpreter_node` | 사용자 대응에서 방어 행동 키워드 탐지 |
+| `defense_judge_node` | 필수 방어 행동 충족 여부 평가 |
+| `stage_result_node` | `STAGE_CLEAR`, `STAGE_FAILED`, `GAME_OVER`, `COMPLETED` 결정 |
+| `evidence_connector_node` | 사례집/RAG 근거 연결 boundary |
+| `feedback_report_node` | 화면 출력용 report 패키징 |
+
+현재 ReAct Agent:
+
+| ReAct Agent | Tool | 역할 |
+| --- | --- | --- |
+| `defense_roleplay_react_agent` | `adaptive_rag_tool` | 전세사기 예방 교육용 임대인/중개인 롤플레이 메시지 생성 |
+
+명령어:
+
+```text
+/힌트
+/상태
+/근거
+/도움말
+/포기
+```
+
+검증 결과:
+
+```text
+/도움말 입력: stage_status=COMMAND, game_status=PLAYING
+신탁원부/권한 확인 입력: stage_status=STAGE_CLEAR, next_stage=RIGHTS_02
+위험 수락 입력: stage_status=GAME_OVER, game_status=GAME_OVER
 ```

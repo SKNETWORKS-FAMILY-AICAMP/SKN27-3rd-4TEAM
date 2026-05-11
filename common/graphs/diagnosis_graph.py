@@ -1,7 +1,7 @@
-﻿"""Diagnosis graph entrypoint.
+"""Diagnosis graph entrypoint.
 
-The graph is intentionally sequential for MVP, but each step is isolated as an agent
-node so routing/supervision can be added later without rewriting the agents.
+Top-level nodes connect project state inside LangGraph. LLM judgement steps
+call create_react_agent-based sub-agents that use tools under common/tools.
 """
 from __future__ import annotations
 
@@ -9,27 +9,27 @@ import json
 from dataclasses import asdict, is_dataclass
 from typing import Callable
 
-from common.agents.diagnosis_nodes import (
-    contract_field_extractor_agent,
-    contract_intake_agent,
-    contract_parser_agent,
-    market_analyzer_agent,
-    report_writer_agent,
-    required_check_analyzer_agent,
-    risk_judge_agent,
-    special_clause_analyzer_agent,
+from common.nodes.diagnosis_nodes import (
+    contract_field_extractor_node,
+    contract_intake_node,
+    contract_parser_node,
+    market_analysis_node,
+    report_writer_node,
+    required_check_node,
+    risk_judge_node,
+    special_clause_analysis_node,
 )
 from common.schemas.diagnosis import DiagnosisState
 
 NODE_SEQUENCE: list[tuple[str, Callable[[DiagnosisState], DiagnosisState]]] = [
-    ("contract_intake", contract_intake_agent),
-    ("contract_parser", contract_parser_agent),
-    ("contract_field_extractor", contract_field_extractor_agent),
-    ("special_clause_analyzer", special_clause_analyzer_agent),
-    ("market_analyzer", market_analyzer_agent),
-    ("required_check_analyzer", required_check_analyzer_agent),
-    ("risk_judge", risk_judge_agent),
-    ("report_writer", report_writer_agent),
+    ("contract_intake", contract_intake_node),
+    ("contract_parser", contract_parser_node),
+    ("contract_field_extractor", contract_field_extractor_node),
+    ("special_clause_analyzer", special_clause_analysis_node),
+    ("market_analyzer", market_analysis_node),
+    ("required_check_analyzer", required_check_node),
+    ("risk_judge", risk_judge_node),
+    ("report_writer", report_writer_node),
 ]
 
 
@@ -74,7 +74,13 @@ def _json_default(value):
     return str(value)
 
 
-if __name__ == "__main__":
-    result = run_diagnosis()
-    print(json.dumps(result.get("report", result), ensure_ascii=False, indent=2, default=_json_default))
+def run_interactive() -> DiagnosisState:
+    print("\n[전세계약 진단 그래프]")
+    print("계약서 PDF/TXT 경로를 입력하세요. 비워두면 mock 계약서로 실행합니다.")
+    contract_file = input("> ").strip() or None
+    return run_diagnosis(contract_file=contract_file, session_id="interactive-diagnosis-session")
 
+
+if __name__ == "__main__":
+    result = run_interactive()
+    print(json.dumps(result.get("report", result), ensure_ascii=False, indent=2, default=_json_default))

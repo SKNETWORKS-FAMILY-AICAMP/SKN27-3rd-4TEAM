@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from langchain_core.tools import tool
+
 from common.tools.llm import LLMUnavailable, extract_json_object, ollama_generate
 
 MOCK_CONTRACT_TEXT = """
@@ -163,3 +165,14 @@ def _extract_special_terms(text: str) -> list[str]:
 
 
 
+
+@tool
+def parse_contract_file_tool(file_path: str | None = None) -> tuple[str, list[str], float | None]:
+    """Parse a contract PDF/TXT path and return text, page texts, and OCR confidence."""
+    return parse_contract_file(file_path)
+
+
+@tool
+def extract_contract_fields_tool(text: str) -> dict[str, Any]:
+    """Extract structured jeonse contract fields from contract text."""
+    return extract_contract_fields(text)

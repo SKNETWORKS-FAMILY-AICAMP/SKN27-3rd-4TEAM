@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from langchain_core.tools import tool
+
 import pandas as pd
 
 from common.schemas.diagnosis import MarketAnalysis
@@ -146,3 +148,8 @@ def _to_float(value: Any) -> float | None:
 
 
 
+
+@tool
+def analyze_market_tool(fields: dict[str, Any]) -> tuple[MarketAnalysis, list[RiskFinding]]:
+    """Analyze jeonse market risk from extracted contract fields and CSV data."""
+    return analyze_market(fields)
