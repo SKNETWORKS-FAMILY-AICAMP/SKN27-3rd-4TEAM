@@ -5,6 +5,11 @@ calling adaptive_rag(task_type, query, filters, top_k) and consume ContextPack o
 """
 from __future__ import annotations
 
+import os
+import uuid
+from typing import Any
+
+import requests
 from langchain_core.tools import tool
 
 from common.schemas.shared import ContextPack, RetrievedContext, RetrievalQuality
@@ -102,13 +107,161 @@ _FALLBACK_CONTEXTS: dict[str, list[RetrievedContext]] = {
 
 
 def adaptive_rag(task_type: str, query: str, filters: dict | None = None, top_k: int = 5) -> ContextPack:
+    provider = os.getenv("RAG_PROVIDER", "remote").lower()
+    if provider == "mock":
+        return _fallback_rag(task_type=task_type, query=query, top_k=top_k)
+
+    if provider in {"remote", "server", "http"}:
+        remote_pack = _remote_rag(task_type=task_type, query=query, filters=filters, top_k=top_k)
+        if remote_pack is not None:
+            return remote_pack
+        if _mock_fallback_enabled():
+            return _fallback_rag(task_type=task_type, query=query, top_k=top_k)
+
+    return ContextPack(
+        task_type=task_type,
+        query=query,
+        contexts=[],
+        quality=RetrievalQuality(
+            sufficient=False,
+            score=0.0,
+            reason="remote RAG unavailable; set RAG_FALLBACK_TO_MOCK=1 only for offline demos",
+        ),
+    )
+
+
+def _remote_rag(task_type: str, query: str, filters: dict | None = None, top_k: int = 5) -> ContextPack | None:
+    """Call the RAG teammate's FastAPI server and adapt references to ContextPack."""
+    base_url = os.getenv("RAG_SERVER_URL", "http://localhost:8000").rstrip("/")
+    timeout = float(os.getenv("RAG_SERVER_TIMEOUT", "10"))
+    session_id = str((filters or {}).get("session_id") or f"lg-{uuid.uuid4().hex[:12]}")
+    message = _build_remote_query(task_type=task_type, query=query, filters=filters)
+
+    try:
+        response = requests.post(
+            f"{base_url}/api/v1/chat/query",
+            json={"session_id": session_id, "message": message, "history": []},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return _remote_failure_pack(task_type, query, exc) if _remote_strict_enabled() else None
+
+    references = payload.get("references", [])
+    contexts = [_reference_to_context(ref, i) for i, ref in enumerate(references[:top_k], 1)]
+    answer = str(payload.get("answer") or "").strip()
+    if answer and len(contexts) < top_k:
+        contexts.insert(
+            0,
+            RetrievedContext(
+                source_id=f"remote-rag-answer-{session_id}",
+                title="RAG 서버 생성 답변 요약",
+                doc_type="rag_answer",
+                text=answer[:1200],
+                score=1.0,
+                metadata={
+                    "provider": "remote",
+                    "endpoint": "/api/v1/chat/query",
+                    "session_id": session_id,
+                    "task_type": task_type,
+                },
+            ),
+        )
+
+    quality = RetrievalQuality(
+        sufficient=bool(contexts),
+        score=_average_score(contexts),
+        reason="remote RAG server references adapted to ContextPack",
+    )
+    return ContextPack(task_type=task_type, query=query, contexts=contexts[:top_k], quality=quality)
+
+
+def _fallback_rag(task_type: str, query: str, top_k: int = 5) -> ContextPack:
     contexts = list(_FALLBACK_CONTEXTS.get(task_type, []))[:top_k]
     quality = RetrievalQuality(
         sufficient=bool(contexts),
         score=0.7 if contexts else 0.0,
-        reason="mock context pack; replace with real Adaptive/Corrective RAG retriever",
+        reason="mock context pack; remote RAG disabled or unavailable",
     )
     return ContextPack(task_type=task_type, query=query, contexts=contexts, quality=quality)
+
+
+def _build_remote_query(task_type: str, query: str, filters: dict | None = None) -> str:
+    sources = TASK_SOURCE_MAP.get(task_type, [])
+    filter_text = ""
+    if filters:
+        public_filters = {k: v for k, v in filters.items() if k != "session_id"}
+        if public_filters:
+            filter_text = f"\n필터 조건: {public_filters}"
+    source_text = f"\n우선 참고 문서 유형: {', '.join(sources)}" if sources else ""
+    return (
+        "다음 전세계약 위험 진단 LangGraph 노드가 사용할 근거를 찾아줘.\n"
+        f"작업 유형: {task_type}{source_text}{filter_text}\n"
+        "답변은 간단히 요약하고, references에는 관련 법령/판례/가이드/사례집 근거가 포함되게 해줘.\n"
+        f"질문: {query}"
+    )
+
+
+def _reference_to_context(reference: Any, index: int) -> RetrievedContext:
+    ref = reference if isinstance(reference, dict) else _model_to_dict(reference)
+    title = str(ref.get("title") or "RAG 근거 문서")
+    doc_type = str(ref.get("doc_type") or "document")
+    text = str(ref.get("chunk_text") or ref.get("content") or "")
+    score = _to_float(ref.get("relevance_score", ref.get("score", 0.0)))
+    return RetrievedContext(
+        source_id=str(ref.get("source_id") or f"remote-rag-ref-{index}"),
+        title=title,
+        doc_type=doc_type,
+        text=text,
+        score=score,
+        metadata={
+            "provider": "remote",
+            "raw_reference": ref,
+        },
+    )
+
+
+def _remote_failure_pack(task_type: str, query: str, exc: Exception) -> ContextPack:
+    return ContextPack(
+        task_type=task_type,
+        query=query,
+        contexts=[],
+        quality=RetrievalQuality(
+            sufficient=False,
+            score=0.0,
+            reason=f"remote RAG request failed: {exc}",
+        ),
+    )
+
+
+def _remote_strict_enabled() -> bool:
+    return os.getenv("RAG_STRICT", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _mock_fallback_enabled() -> bool:
+    return os.getenv("RAG_FALLBACK_TO_MOCK", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _average_score(contexts: list[RetrievedContext]) -> float:
+    if not contexts:
+        return 0.0
+    return round(sum(context.score for context in contexts) / len(contexts), 3)
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _model_to_dict(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return {}
 
 
 @tool

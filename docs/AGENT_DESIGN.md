@@ -1418,3 +1418,144 @@ CRITICAL 필터 결과: PB_AUCTION_NOTICE, PB_TRUST_REGISTRY
 PB_TRUST_REGISTRY 상세 조회 성공
 playbook.py py_compile 통과
 ```
+
+## 25. RAG 서버 1차 통합
+
+### 25.1 통합 방향
+
+RAG 담당자가 추가한 `backend/rag_server`를 LangGraph 내부로 직접 가져오지 않고, HTTP API로 호출하는 방식으로 1차 통합한다.
+
+```text
+LangGraph node
+→ common.tools.adaptive_rag.adaptive_rag()
+→ RAG 서버 /api/v1/chat/query 호출
+→ references를 ContextPack으로 변환
+→ 기존 Agent node가 ContextPack 사용
+```
+
+이 방식은 기존 `diagnosis_graph`, `legal_consultation_graph`, `defense_simulation_graph`의 호출 구조를 크게 바꾸지 않으면서 mock RAG 경계를 실제 RAG 서버 경계로 교체할 수 있다.
+
+### 25.2 구현 파일
+
+```text
+common/tools/adaptive_rag.py
+```
+
+추가된 환경변수:
+
+| 환경변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RAG_PROVIDER` | `remote` | 기본 RAG 제공자. `remote`면 RAG 서버 호출, `mock`이면 명시적 mock 사용 |
+| `RAG_SERVER_URL` | `http://localhost:8000` | RAG 서버 주소 |
+| `RAG_SERVER_TIMEOUT` | `10` | RAG 서버 요청 timeout 초 |
+| `RAG_FALLBACK_TO_MOCK` | `0` | `1`일 때만 RAG 서버 실패 시 mock으로 대체 |
+| `RAG_STRICT` | `0` | `1`이면 remote 실패 사유를 ContextPack으로 즉시 반환 |
+
+### 25.3 동작 정책
+
+기본 정책은 “실제 RAG 우선, mock은 비상용”이다.
+
+```text
+RAG_PROVIDER=remote
+→ RAG 서버 호출 성공: 실제 references 사용
+→ RAG 서버 호출 실패 + RAG_FALLBACK_TO_MOCK=0: 빈 ContextPack과 실패 reason 반환
+→ RAG 서버 호출 실패 + RAG_FALLBACK_TO_MOCK=1: offline demo용 mock ContextPack 반환
+
+RAG_PROVIDER=mock
+→ 명시적으로 mock ContextPack 사용
+```
+
+### 25.4 현재 매핑
+
+RAG 서버의 현재 API는 retrieve-only가 아니라 answer 생성까지 포함하는 `/api/v1/chat/query`이다. 따라서 1차 통합에서는 다음처럼 변환한다.
+
+```text
+RAG ChatResponse.answer
+→ RetrievedContext(doc_type="rag_answer")
+
+RAG ChatResponse.references[]
+→ RetrievedContext[]
+```
+
+기존 `ContextPack` 스키마는 유지한다.
+
+```text
+ContextPack
+  task_type
+  query
+  contexts: list[RetrievedContext]
+  quality: RetrievalQuality
+```
+
+### 25.5 검증 결과
+
+```text
+adaptive_rag.py py_compile 통과
+RAG_PROVIDER=remote + 서버 미기동 + fallback off
+→ sufficient=False / contexts=0 / 실패 reason 반환
+
+RAG_PROVIDER=remote + 서버 미기동 + RAG_FALLBACK_TO_MOCK=1
+→ 명시적으로 mock ContextPack 반환
+```
+
+### 25.6 개선사항
+
+1. RAG 서버에 retrieve-only API 추가
+
+현재 `/api/v1/chat/query`는 최종 답변까지 생성한다. LangGraph Agent가 판단을 담당하려면 다음 API가 추가되는 것이 가장 좋다.
+
+```text
+POST /api/v1/rag/retrieve
+{
+  "task_type": "special_clause_analysis",
+  "query": "...",
+  "filters": {"doc_type": ["law", "case", "checklist"]},
+  "top_k": 5
+}
+```
+
+응답은 answer 없이 references만 반환한다.
+
+2. task_type별 RAG 라우팅 강화
+
+`adaptive_rag.py`의 `TASK_SOURCE_MAP`을 RAG 서버의 검색 필터로 넘겨서 작업별로 검색 문서 유형을 제한한다.
+
+```text
+special_clause_analysis → checklist, guide, law, case
+legal_case_search → case, judgement
+legal_law_guide_search → law, guide, checklist
+defense_simulation_evidence → casebook, guide, law, checklist
+```
+
+3. RAG reference metadata 확장
+
+Evidence chip과 판례 플레이북 연결을 위해 RAG 서버 reference에 다음 metadata가 있으면 좋다.
+
+```text
+source_id
+doc_type
+title
+page
+case_number
+court
+law_name
+article
+chunk_id
+```
+
+4. GraphDB 결과를 ContextPack에 포함
+
+Neo4j에서 나온 `RiskFactor`, `Law`, `Case` 관계를 `RetrievedContext.metadata.graph_path` 형태로 넣으면 UI에서 “이 위험이 어떤 법령/판례와 연결되는지”를 표시할 수 있다.
+
+5. Supervisor Graph는 RAG 안정화 후 추가
+
+RAG 서버 연결이 안정화된 뒤, 서비스 전체 요청을 다음 그래프/도구로 라우팅하는 상위 `supervisor_graph.py`를 추가한다.
+
+```text
+계약서 진단 → diagnosis_graph
+법률 질문 → legal_consultation_graph
+방어 훈련 → defense_simulation_graph
+진단 기록 → history tools
+플레이북 → playbook tools
+체크리스트 → checklist tools
+```
