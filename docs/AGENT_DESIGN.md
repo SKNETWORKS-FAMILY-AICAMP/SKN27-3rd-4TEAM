@@ -925,3 +925,496 @@ RPG graph node:
 신탁원부/권한 확인 입력: stage_status=STAGE_CLEAR, next_stage=RIGHTS_02
 위험 수락 입력: stage_status=GAME_OVER, game_status=GAME_OVER
 ```
+## 19. Common 폴더 검증 및 GraphDB 연동 계획
+
+### 19.1 2026-05-11 검증 결과
+
+`common` 폴더 전체를 기준으로 다음 항목을 확인했다.
+
+```text
+py_compile common 전체: 통과
+진단 그래프 LLM off 실행: risk_score=60, risk_level=HIGH
+법률상담 그래프 LLM off 실행: basis_type=MIXED, question_type=DEPOSIT_RETURN
+방어 RPG 그래프 명령어 입력: COMMAND / PLAYING
+방어 RPG 그래프 성공 대응: STAGE_CLEAR / next_stage=RIGHTS_02
+방어 RPG 그래프 위험 수락: GAME_OVER / GAME_OVER
+이전 common.agents.*_nodes import 잔존 여부: 없음
+common/agents 내부 @tool wrapper: 없음
+```
+
+현재 구조는 다음 기준을 만족한다.
+
+- `common/graphs`: LangGraph entrypoint
+- `common/nodes`: 프로젝트 state를 처리하는 LangGraph node adapter
+- `common/agents`: `create_react_agent` 기반 ReAct agent 공통 factory
+- `common/tools`: `@tool` 공개 도구와 내부 helper
+
+### 19.2 검토 중 확인한 주의 지점
+
+| 위치 | 현재 상태 | 판단 |
+| --- | --- | --- |
+| `common/tools/adaptive_rag.py` | mock context 기반 | RAG/GraphDB 연결 시 최우선 교체 지점 |
+| `common/nodes/diagnosis_nodes.py` | 특약 위험 일부 rule 기반 | 실제 RAG 연결 후 LLM structured output 기반으로 낮춰야 함 |
+| `common/tools/document.py` | 파일 없음/파싱 실패 시 mock 계약서 fallback | 데모에는 편하지만 실제 업로드 API에서는 오류 반환으로 변경 필요 |
+| `common/tools/document.py` | 이미지 확장자 허용하지만 OCR 미연결 | OCR 연결 전에는 이미지 입력을 막거나 명시적 OCR 미지원 오류 필요 |
+| `common/nodes/legal_consultation_nodes.py` | evidence grading이 context 개수 중심 | RAG score, graph relation, metadata 기반으로 고도화 필요 |
+| `common/agents/react_agent_factory.py` | 예외 발생 시 None fallback | 데모 안정성은 좋지만 운영/디버깅용으로 error trace 옵션 추가 권장 |
+| `common/nodes/defense_simulation_nodes.py` | 방어 행동 keyword rule 기반 | RAG/LLM 기반 semantic judging으로 확장 가능 |
+
+### 19.3 RAG + GraphDB가 들어올 때의 권장 구조
+
+GraphDB는 Vector RAG를 대체하는 것이 아니라 보완 계층으로 둔다. 즉 `adaptive_rag()`의 내부를 Hybrid Retriever로 바꾸고, 그래프/node/agent 쪽 인터페이스는 유지한다.
+
+```mermaid
+flowchart TD
+    A["Node or ReAct Agent"] --> B["adaptive_rag_tool"]
+    B --> C["Query Router"]
+    C --> D["Vector Retriever"]
+    C --> E["Graph Retriever"]
+    C --> F["Metadata Filter"]
+    D --> G["Context Merger"]
+    E --> G
+    F --> G
+    G --> H["Retrieval Grader"]
+    H --> I{"Sufficient?"}
+    I -->|"Yes"| J["ContextPack"]
+    I -->|"No"| K["Query Rewrite / Expanded Traversal"]
+    K --> C
+```
+
+### 19.4 GraphDB에 넣으면 좋은 노드/관계
+
+GraphDB는 문서 chunk 검색보다 관계 탐색에 강하므로 다음 정보를 넣는 것이 좋다.
+
+| Graph Node | 예시 |
+| --- | --- |
+| `Case` | 전세피해 사례, 판례, 분쟁조정 사례 |
+| `RiskType` | 신탁등기, 무권대리, 깡통전세, 대항력 허점, 보증금 반환 지연 |
+| `ClausePattern` | 다음 임차인 입주 후 반환, 수리비 전액 부담, 권리변동 책임 제한 |
+| `DefenseAction` | 신탁원부 확인, 위임장 확인, 전입신고/확정일자, 잔금 직전 등기부 확인 |
+| `LegalBasis` | 주택임대차보호법 조항, 표준계약서 가이드, 공공 체크리스트 |
+| `DocumentChunk` | RAG 원문 chunk |
+| `ScenarioStage` | 방어 RPG stage |
+
+권장 관계:
+
+| Relation | 의미 |
+| --- | --- |
+| `CASE_HAS_RISK` | 사례가 어떤 위험 유형에 해당하는지 |
+| `RISK_HAS_PATTERN` | 위험 유형과 특약/문구 패턴 연결 |
+| `RISK_DEFENDED_BY` | 위험 유형을 막는 방어 행동 |
+| `RISK_SUPPORTED_BY_LAW` | 위험 유형과 법령/가이드 연결 |
+| `CASE_CITES_LAW` | 사례/판례가 참조하는 법령 |
+| `CHUNK_ABOUT` | 문서 chunk가 다루는 위험/사례/조항 |
+| `STAGE_BASED_ON_CASE` | RPG stage와 사례 연결 |
+
+### 19.5 `ContextPack` 확장 제안
+
+현재 `ContextPack`은 retrieved chunk 중심이다. GraphDB까지 붙이면 다음 metadata를 `RetrievedContext.metadata`에 담는 방식으로 먼저 확장하고, 필요하면 별도 dataclass로 분리한다.
+
+```python
+metadata={
+    "retrieval_mode": "vector|graph|hybrid",
+    "graph_path": ["Case:...", "RiskType:...", "DefenseAction:..."],
+    "risk_type": "TRUST_REGISTRATION",
+    "case_id": "...",
+    "law_id": "...",
+    "relation_score": 0.82,
+}
+```
+
+초기에는 schema를 크게 바꾸지 말고 `metadata`를 활용한다. 이렇게 하면 기존 report, citation, agent trace가 깨지지 않는다.
+
+### 19.6 task type별 GraphDB 활용 방식
+
+| task_type | Vector RAG | GraphDB 활용 |
+| --- | --- | --- |
+| `special_clause_analysis` | 특약과 유사한 문서 chunk 검색 | 특약 패턴 → 위험 유형 → 방어 특약 경로 탐색 |
+| `required_check_analysis` | 체크리스트/가이드 chunk 검색 | 주택유형/위험유형 → 필수 확인 서류 탐색 |
+| `legal_case_search` | 질문과 유사한 판례 chunk 검색 | 위험유형 → 유사 사례/판례 → 법령 관계 탐색 |
+| `legal_law_guide_search` | 법령/가이드 chunk 검색 | 법령 조항과 연결된 위험/방어 행동 탐색 |
+| `defense_simulation_evidence` | 사례집 chunk 검색 | stage → source case → hidden risk → defense action 경로 탐색 |
+| `report_generation` | 리포트 작성 가이드 검색 | 발견된 risk finding들의 법령/방어 행동 요약 |
+
+### 19.7 구현 순서 제안
+
+1. `common/tools/adaptive_rag.py` 내부에 provider 구조 추가
+   - `RAG_PROVIDER=mock|vector|graph|hybrid`
+   - 기존 함수 signature 유지
+2. `GraphRetriever` helper 추가
+   - 초기에는 RAG 팀 GraphDB API/함수 호출 wrapper만 둔다.
+   - `query_graph_evidence(task_type, query, filters, top_k)` 형태 권장
+3. `VectorRetriever` helper 추가
+   - 기존 vector DB 검색 결과를 `RetrievedContext`로 normalize
+4. `ContextMerger` 구현
+   - vector result와 graph path result를 합치고 중복 source 제거
+5. `RetrievalGrader` 개선
+   - context 개수 대신 score, doc_type, relation_score, source freshness 반영
+6. Node별 하드코딩 제거
+   - `special_clause_analysis_node`의 `risky_patterns`
+   - `required_check_node`의 고정 필수 확인 finding
+   - `defense_simulation_nodes`의 keyword-only judging
+
+### 19.8 당장 코드 변경 우선순위
+
+| 우선순위 | 작업 | 이유 |
+| --- | --- | --- |
+| 1 | `adaptive_rag.py`를 provider 기반 구조로 리팩토링 | RAG/GraphDB 연결 시 그래프 코드를 안 바꾸기 위해 |
+| 2 | `RetrievedContext.metadata` 표준 키 정의 | GraphDB path와 판례/법령 metadata를 report까지 살리기 위해 |
+| 3 | `react_agent_factory.py`에 debug error trace 옵션 추가 | ReAct 실패 원인을 숨기지 않기 위해 |
+| 4 | document parser의 mock fallback을 demo mode로 제한 | 실제 계약서 업로드 오류를 숨기지 않기 위해 |
+| 5 | RPG defense judging을 semantic judge로 확장 | 사용자가 키워드와 다른 표현을 써도 통과 가능하게 하기 위해 |
+## 20. UI Response / Evidence Chip 업데이트
+
+### 20.1 공통 UI Schema
+
+프론트엔드 화면이 그래프별 report 구조 차이에 직접 의존하지 않도록 `common/schemas/ui.py`를 추가했다.
+
+주요 schema:
+
+| Schema | 역할 |
+| --- | --- |
+| `EvidenceChip` | 답변/진단 결과 아래에 표시할 근거 자료 칩 |
+| `RiskSummary` | 위험도 카드/요약 영역 |
+| `RecommendedAction` | 사용자 다음 행동 |
+| `ChecklistProgress` | 안전 체크리스트 진행률 |
+| `RelatedCaseSummary` | 유사 사례/판례 카드 |
+| `UnifiedUIResponse` | 상담 챗, 진단, RPG, 플레이북 등 화면 공통 응답 |
+
+### 20.2 Evidence Chip 변환기
+
+`common/tools/evidence.py`를 추가했다. 그래프별 report에 흩어진 근거 정보를 `EvidenceChip`으로 통합한다.
+
+지원 입력:
+
+| Report field | 출처 | 변환 결과 |
+| --- | --- | --- |
+| `rag_references` | 진단 그래프 | CHECKLIST/GUIDE/LAW/CASE chip |
+| `cited_cases` | 법률상담 그래프 | CASE chip |
+| `cited_laws` | 법률상담 그래프 | LAW chip |
+| `external_sources` | 법률상담 그래프 | EXTERNAL chip |
+| `evidence_report.references` | 방어 RPG 그래프 | CASEBOOK/GUIDE/LAW chip |
+| `market_analysis` | 진단 그래프 | MARKET chip |
+
+공개 tool:
+
+```text
+build_evidence_chips_tool(report)
+```
+
+검증 결과:
+
+```text
+진단 report → EvidenceChip 4개 생성
+법률상담 report → EvidenceChip 2개 생성
+RPG report → EvidenceChip 1개 생성
+py_compile 통과
+```
+
+### 20.3 프론트 표시 예시
+
+```json
+{
+  "label": "법령: 주택임대차보호법",
+  "chip_type": "LAW",
+  "source_id": "mock-law-housing-lease",
+  "title": "주택임대차보호법",
+  "summary": "대항력과 우선변제권 확보 요건...",
+  "url": null,
+  "metadata": {}
+}
+```
+
+GraphDB가 연결되면 `metadata.graph_path`, `metadata.risk_type`, `metadata.relation_score` 등을 chip metadata에 그대로 실어 UI에서 관계 근거까지 표시할 수 있다.
+## 21. UI Adapter 업데이트
+
+### 21.1 목적
+
+그래프별 report를 프론트엔드가 바로 소비할 수 있는 `UnifiedUIResponse`로 변환하기 위해 `common/tools/ui_adapter.py`를 추가했다.
+
+### 21.2 Adapter 함수
+
+| 함수 | 입력 | 출력 screen_type | 용도 |
+| --- | --- | --- | --- |
+| `build_diagnosis_ui_response` | 진단 그래프 report | `CHAT_DIAGNOSIS` | 상담 챗 기본 화면의 계약 위험 진단 영역 |
+| `build_legal_chat_ui_response` | 법률상담 그래프 report | `LEGAL_CHAT` | RAG 법률 상담 답변 영역 |
+| `build_defense_training_ui_response` | 방어 RPG 그래프 report | `DEFENSE_TRAINING` | 사례 기반 방어 연습/플레이북 영역 |
+| `build_ui_response` | report + screen_type | screen_type별 dispatch | API adapter 공통 진입점 |
+
+공개 tool:
+
+```text
+build_diagnosis_ui_response_tool(report, session_id)
+build_legal_chat_ui_response_tool(report, session_id)
+build_defense_training_ui_response_tool(report, session_id)
+```
+
+### 21.3 변환 내용
+
+`UnifiedUIResponse`에는 다음 정보가 들어간다.
+
+```text
+screen_type
+title
+subtitle
+answer
+risk
+evidence_chips
+recommended_actions
+related_cases
+primary_payload
+agent_trace
+warnings
+metadata
+```
+
+### 21.4 검증 결과
+
+```text
+진단 report → CHAT_DIAGNOSIS / risk=HIGH / evidence_chips=4 / recommended_actions=4
+법률상담 report → LEGAL_CHAT / evidence_chips=2 / recommended_actions=4 / related_cases=1
+방어 RPG report → DEFENSE_TRAINING / risk=LOW / evidence_chips=1 / related_cases=1
+py_compile 통과
+@tool wrapper 3개 등록 확인
+```
+
+### 21.5 프론트 연결 방향
+
+프론트는 그래프별 원본 report를 직접 파싱하지 않고, 가능하면 `UnifiedUIResponse`만 바라본다.
+
+```text
+diagnosis_graph.run_diagnosis()
+→ build_diagnosis_ui_response()
+→ 상담 챗/진단 화면
+
+legal_consultation_graph.run_legal_consultation()
+→ build_legal_chat_ui_response()
+→ 상담 답변 화면
+
+defense_simulation_graph.run_defense_simulation()
+→ build_defense_training_ui_response()
+→ 플레이북/방어 연습 화면
+```
+## 22. Safety Checklist 업데이트
+
+### 22.1 구현 파일
+
+```text
+data/safety_checklist.json
+common/tools/checklist.py
+```
+
+회의안에는 “4단계 19항목”이라고 적혀 있었지만, 세부 단계 수 `계약 전(6) + 계약 당일(5) + 잔금일(5) + 기간 중(4)`의 합은 20이다. MVP에서는 세부 단계 수를 우선하여 총 20항목으로 구현했다.
+
+### 22.2 단계 구성
+
+| 단계 | 항목 수 | 예시 |
+| --- | --- | --- |
+| 계약 전 | 6 | 등기부 최신본 확인, 소유자 확인, 전세가율 확인, 체납 확인 |
+| 계약 당일 | 5 | 계약서 핵심 필드 확인, 불리한 특약 수정, 권리변동 금지 특약 |
+| 잔금일 | 5 | 잔금 직전 등기부 재확인, 전입신고, 확정일자, 보증보험 확인 |
+| 기간 중 | 4 | 등기부 변동 모니터링, 증거 보관, 갱신/종료 통지, 반환 준비 |
+
+### 22.3 상태 계산
+
+체크리스트 항목 상태는 다음 3가지로 계산한다.
+
+| 상태 | 의미 |
+| --- | --- |
+| `DONE` | 업로드/검색 근거가 있어 기본 확인 완료로 볼 수 있는 항목 |
+| `CAUTION` | 진단 결과에서 관련 위험 또는 확인 필요 finding이 발견된 항목 |
+| `TODO` | 사용자가 직접 확인해야 하는 항목 |
+
+공개 함수 및 tool:
+
+```text
+build_safety_checklist_status(report)
+build_safety_checklist_status_tool(report)
+```
+
+### 22.4 UI Adapter 연동
+
+`build_diagnosis_ui_response()`가 진단 report를 변환할 때 안전 체크리스트를 함께 포함하도록 연결했다.
+
+```text
+UnifiedUIResponse.checklist_progress
+UnifiedUIResponse.primary_payload["safety_checklist"]
+```
+
+검증 결과:
+
+```text
+체크리스트 총 항목 수: 20
+단계별 항목 수: 계약 전 6 / 계약 당일 5 / 잔금일 5 / 기간 중 4
+샘플 진단 report 기준: completed=9, caution=6, progress=45.0%, status_label=주의 필요
+py_compile 통과
+@tool 등록 확인
+```
+
+## 23. Diagnosis History 업데이트
+
+### 23.1 구현 파일
+
+```text
+common/schemas/history.py
+common/tools/history.py
+```
+
+회의안의 “내 진단 기록” 화면을 위해 진단 그래프 결과를 목록, 통계, 비교 화면에서 사용할 수 있는 저장용 형태로 정리했다.
+
+### 23.2 데이터 구조
+
+| 구조 | 용도 |
+| --- | --- |
+| `DiagnosisHistoryItem` | 진단 1건의 저장용 요약 레코드 |
+| `DiagnosisHistoryStats` | 총건수 / 위험 / 주의 / 안전 / 즐겨찾기 / 평균 위험도 통계 |
+| `DiagnosisComparisonResult` | 2개 이상 선택 비교 결과 |
+
+`DiagnosisHistoryItem`에는 다음 정보가 들어간다.
+
+```text
+diagnosis_id
+created_at
+address
+housing_type
+deposit_amount
+risk_score
+risk_level
+risk_bucket
+favorite
+summary
+evidence_chip_count
+finding_count
+high_priority_count
+report_json
+ui_response_json
+metadata
+```
+
+### 23.3 제공 함수 및 Tool
+
+| 함수 | 역할 |
+| --- | --- |
+| `create_history_item` | 진단 report와 UI response를 히스토리 레코드로 변환 |
+| `summarize_history` | 기록 목록의 4분할 통계 계산 |
+| `compare_history_items` | 선택한 진단 기록들의 공통/차이 위험 항목 비교 |
+| `sort_history_items` | 생성일, 위험도, 보증금, 즐겨찾기 기준 정렬 |
+| `filter_history_items` | 위험 버킷, 즐겨찾기, 키워드 기준 필터 |
+
+공개 tool:
+
+```text
+create_history_item_tool(report, ui_response, diagnosis_id, favorite)
+summarize_history_tool(items)
+compare_history_items_tool(items)
+```
+
+### 23.4 화면 연결 방향
+
+```text
+diagnosis_graph.run_diagnosis()
+→ build_diagnosis_ui_response()
+→ create_history_item()
+→ 내 진단 기록 목록 저장/표시
+
+history_items
+→ summarize_history()
+→ 총건수 / 위험 / 주의 / 안전 통계
+
+selected_history_items
+→ compare_history_items()
+→ 2개 이상 매물 나란히 비교
+```
+
+### 23.5 검증 결과
+
+```text
+샘플 진단 report → diagnosis_id 생성 완료
+risk_score=60 / risk_level=HIGH / risk_bucket=RISK
+evidence_chip_count=4 / finding_count=4 / high_priority_count=3
+통계: total=1 / risk=1 / caution=0 / safe=0 / favorite=1 / average=60.0
+비교 요약 문구 생성 확인
+py_compile 통과
+@tool wrapper 3개 등록 확인
+common 폴더 전체 py_compile 통과
+```
+
+## 24. Playbook Cards 업데이트
+
+### 24.1 구현 파일
+
+```text
+data/playbook_cards.json
+common/tools/playbook.py
+```
+
+회의안의 “사례·판례 플레이북” 화면을 위해 상황 카드형 JSON 데이터를 추가했다. 기존 `defense_scenarios.json`은 사용자가 사기 상황을 방어하는 RPG 진행용 데이터이고, `playbook_cards.json`은 실제 피해 또는 위험 상황에서 사용자가 따라 할 수 있는 대응 가이드 데이터다.
+
+### 24.2 카드 구성
+
+| card_id | 제목 | 주요 위험 |
+| --- | --- | --- |
+| `PB_NO_CONTACT` | 임대인 연락두절 | 보증금 반환 지연, 임차권등기 |
+| `PB_AUCTION_NOTICE` | 경매 통지 수령 | 경매, 배당요구, 우선변제권 |
+| `PB_LANDLORD_CHANGED` | 임대인 변경 | 소유권 이전, 계약 승계 |
+| `PB_TRUST_REGISTRY` | 신탁등기 발견 | 신탁원부, 계약 권한 |
+| `PB_SUSPICIOUS_CLAUSE` | 불리한 특약 발견 | 보증금 반환 지연, 수선 책임, 권리변동 |
+| `PB_IDENTITY_AUTHORITY` | 위조·대리권 문제 | 소유자 확인, 무권대리, 입금 계좌 |
+
+각 카드에는 다음 필드가 들어간다.
+
+```text
+card_id
+title
+situation
+risk_types
+severity
+user_goal
+warning_signs
+timeline_actions
+evidence_tags
+source_query
+evidence_requirements
+ui_badge
+```
+
+`timeline_actions`는 UI 요구사항에 맞춰 `24시간`, `1주`, `1개월` 단계로 구성했다.
+
+### 24.3 RAG 연결 지점
+
+각 카드에는 `source_query`, `evidence_tags`, `evidence_requirements`를 넣어두었다. 추후 RAG 또는 GraphDB가 연결되면 다음 방식으로 확장한다.
+
+```text
+playbook card 선택
+→ source_query / evidence_tags로 RAG 검색
+→ 관련 판례, 법령, 사례집, 체크리스트 chunk 조회
+→ evidence chip으로 UI 표시
+```
+
+### 24.4 제공 함수 및 Tool
+
+| 함수 | 역할 |
+| --- | --- |
+| `load_playbook_cards` | 전체 플레이북 JSON 로드 |
+| `list_playbook_cards` | 위험유형, 심각도, 키워드 기준 카드 조회 |
+| `get_playbook_card` | card_id 기준 단일 카드 조회 |
+| `summarize_playbook_cards` | 카드 수, 심각도별 수, 위험유형별 수 요약 |
+
+공개 tool:
+
+```text
+load_playbook_cards_tool()
+list_playbook_cards_tool(risk_type, severity, keyword)
+get_playbook_card_tool(card_id)
+summarize_playbook_cards_tool()
+```
+
+### 24.5 검증 결과
+
+```text
+플레이북 카드 총 6개
+severity_counts: HIGH 3 / CRITICAL 2 / MEDIUM 1
+CRITICAL 필터 결과: PB_AUCTION_NOTICE, PB_TRUST_REGISTRY
+PB_TRUST_REGISTRY 상세 조회 성공
+playbook.py py_compile 통과
+```
