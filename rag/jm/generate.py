@@ -16,7 +16,7 @@ class GenerateResult:
     answer: str
     hits: List[SearchHit]
 
-
+# RAG 답변 생성
 def generate_answer(
     query: str,
     k: int = 5,

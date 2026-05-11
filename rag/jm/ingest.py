@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+import time
 import os
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
@@ -33,27 +34,32 @@ def _iter_files(path: str, pattern: Optional[str]) -> List[str]:
 
 # 텍스트 전처리 (Cleaning)
 def _clean_text(text: str) -> str:
-    # 제어 문자 제거
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # 제어 문자 및 보이지 않는 유니코드 문자(Zero-width space 등) 제거
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b\u200c\u200d\ufeff]', '', text)
     
-    # 이메일 및 URL 제거
+    # 이메일 제거
     text = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '', text)
-    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
+    # URL 제거
+    text = re.sub(r'https?://[^\s]+', '', text)
     
-    # 페이지 번호 및 표기 제거 (한국어 조사 '23p에서' 등이 붙는 경우 고려하여 \b 대신 더 정교한 패턴 사용)
-    text = re.sub(r'^\s*[-]*\s*\d+\s*[-]*\s*$', '', text, flags=re.MULTILINE) # 숫자만 있는 줄
-    text = re.sub(r'(?<![a-zA-Z])[pP]\.?\s*\d+(?![a-zA-Z])', '', text) # p74, p. 74 등 (영어 알파벳과 겹치지 않게)
-    text = re.sub(r'[Pp]age\s?\d+', '', text)    # Page 74 등
-    text = re.sub(r'(?<![a-zA-Z])\d+\s*[pP](?![a-zA-Z])', '', text)   # 23p, 23 p 등 (23p에서 처럼 조사가 붙어도 지워짐)
-    text = re.sub(r'\d+\s*(?:페이지|쪽)', '', text) # 23페이지, 23쪽 등
+    # 페이지 번호 및 표기 제거
+    # 단독 숫자만 있는 줄 (예: - 23 - , _23_ 등)
+    text = re.sub(r'^\s*[-_]*\s*\d+\s*[-_]*\s*$', '', text, flags=re.MULTILINE)
+    # p.74, p 74 등 (영어 알파벳과 겹치지 않게)
+    text = re.sub(r'(?<![a-zA-Z])[pP]\.?\s*\d+(?![a-zA-Z])', '', text)
+    # Page 74 등
+    text = re.sub(r'[Pp]age\s*\d+', '', text)
+    # 23p, 23 p 등 (뒤에 '에서' 같은 조사가 붙는 경우도 고려)
+    text = re.sub(r'(?<![a-zA-Z])\d+\s*[pP](?![a-zA-Z])', '', text)
+    # 23페이지, 23쪽 등
+    text = re.sub(r'\d+\s*(?:페이지|쪽)', '', text)
     
     # 띄어쓰기 사이에 혼자 둥둥 떠다니는 무의미한 숫자 패턴 제거 (예: " 27-2 ", " 1-1 ")
-    # 단, 123-45번지 처럼 뒤에 글자가 붙거나, 2024-05-10 처럼 긴 날짜 형식은 보호됨
     text = re.sub(r'(?<!\S)\d{1,3}-\d{1,3}(?!\S)', '', text)
     
-    # 목차 기호 및 단독 로마자 제거 (예: "I.", "II.", "IV.")
-    # 단, 영어 단어 I와 헷갈리지 않게 문장 부호가 같이 있는 경우나 단독으로 쓰인 경우만 처리
-    text = re.sub(r'\b(?:I{1,3}|IV|V|VI{1,3}|IX|X)\.\s', ' ', text)
+    # 목차 기호 및 단독 로마자 제거 (예: "I.", "II.", "IV." 및 특수문자 "Ⅰ", "Ⅱ")
+    # 알파벳 형태와 유니코드 특수문자 형태 모두 대응
+    text = re.sub(r'\b(?:I{1,3}|IV|V|VI{1,3}|IX|X)\b\.?\s?|[Ⅰ-Ⅻ]\.?\s?', ' ', text)
     
     # 반복적으로 나타나는 헤더/푸터 문구 제거
     blacklist = [
@@ -70,6 +76,31 @@ def _clean_text(text: str) -> str:
     # PDF 추출 시 발생하는 CID: 형태의 불필요한 기호 제거
     text = re.sub(r'\(cid:\d+\)', '', text)
     
+    # 불필요한 특수문자 반복 제거 (예: ----, ~~~~ 등)
+    text = re.sub(r'[-=~_]{3,}', ' ', text)
+
+    # 중점(⋅), 불렛(•) 등 특수 기호 제거
+    text = re.sub(r'[⋅•]', ' ', text)
+
+    # 목차에 사용되는 연속된 점선(······ 또는 ......) 제거
+    text = re.sub(r'[·\.]{2,}', ' ', text)
+
+    # 대량의 번호 나열 노이즈 제거 (예: 3660, 3661, 3663~3669, 3671~3673 ...)
+    text = re.sub(r'(?:\d{1,5}(?:~\d{1,5})?,\s*){3,}\d{1,5}(?:~\d{1,5})?', ' ', text)
+
+
+    # 흩어져서 추출된 숫자/콤마 사이의 공백 제거 (예: "5 , 3 7 5" -> "5,375")
+    text = re.sub(r'(?<=\d)\s(?=\d)|(?<=\d)\s(?=,)|(?<=,)\s(?=\d)', '', text)
+
+    # 문장 시작이나 공백 뒤에 나오는 '숫자 + 한두 글자' 파편 제거 (예: "10 다면", "23 에서")
+    text = re.sub(r'(?:^|\s)\d+\s[\w]{1,2}(?=\s)', ' ', text)
+
+    # 문장 중간에 뜬금없이 나타나는 단독 숫자(페이지 번호 등) 제거
+    text = re.sub(r'\s\d{1,3}\s', ' ', text)
+
+    # 페이지 번호와 별표(*)가 결합된 노이즈 (예: "72 * ") 제거
+    text = re.sub(r'(?:^|\s)\d+\s*\*\s*', ' ', text)
+
     # 연속된 공백 및 줄바꿈을 하나의 공백으로 통합
     text = re.sub(r'\s+', ' ', text)
     
@@ -146,6 +177,10 @@ def ingest_paths(
             file_count += 1
 
     if all_chunks:
-        vs.add_documents(all_chunks)
+        # OpenAI Rate Limit(특히 TPM 한도) 방지를 위해 배치 사이즈를 20으로 대폭 줄이고 딜레이 추가
+        batch_size = 20
+        for i in range(0, len(all_chunks), batch_size):
+            vs.add_documents(all_chunks[i:i + batch_size])
+            time.sleep(2)  # API 한도 방지를 위해 2초 대기
 
     return IngestResult(files=file_count, chunks=len(all_chunks))
