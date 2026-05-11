@@ -24,9 +24,10 @@ joblib==1.4.2
 langchain==1.2.17
 langchain-community==0.4.1
 langchain-openai==1.2.1
+langchain-postgres==0.0.16
 langchain-pymupdf4llm==0.5.0
 openai==2.36.0
-chromadb==0.6.3
+pgvector>=0.3.6
 tiktoken==0.9.0
 pypdf==5.4.0
 pdfplumber==0.11.4
@@ -36,7 +37,7 @@ pymupdf4llm==0.1.9
 # DB
 # =====================
 sqlalchemy==2.0.40
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.11
 alembic==1.15.2
 
 # =====================
@@ -45,3 +46,26 @@ alembic==1.15.2
 streamlit==1.57.0
 python-dotenv==1.1.0
 tqdm==4.67.3
+
+# =====================
+# FastAPI 백엔드
+# =====================
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+pydantic-settings==2.10.1
+httpx==0.28.1
+aiofiles==24.1.0
+
+# =====================
+# Graph DB
+# =====================
+neo4j==5.28.1
+
+# =====================
+# LangSmith 트레이싱
+# =====================
+langsmith>=0.3.45
+
+
+pg8000

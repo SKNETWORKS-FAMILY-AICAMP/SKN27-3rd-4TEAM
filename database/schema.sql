@@ -2,6 +2,10 @@
 -- 전세계약 위험 진단 에이전트 - PostgreSQL 스키마
 -- =============================================
 
+-- pgvector 익스텐션 활성화 (벡터 유사도 검색용)
+-- ChromaDB 없이 PostgreSQL 하나로 벡터 DB 역할까지 담당
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- 1. 전세 실거래가 (RAG 검색 + 전세가율 계산용)
 CREATE TABLE jeonse_transactions (
     id                  SERIAL PRIMARY KEY,
@@ -63,11 +67,12 @@ CREATE TABLE rag_documents (
     file_name           VARCHAR(200),
     chunk_index         INTEGER,                -- 청크 번호
     chunk_text          TEXT,                   -- 청크 텍스트 (검색용)
-    vector_id           VARCHAR(100),           -- ChromaDB vector ID
+    vector_id           VARCHAR(100),           -- 임베딩 완료 여부 추적 (chunk_{id} or NULL)
     source_law          VARCHAR(100),           -- 관련 법령명
     created_at          TIMESTAMP DEFAULT NOW(),
     UNIQUE (file_name, chunk_index)
 );
+-- 벡터는 langchain_postgres가 langchain_pg_embedding 테이블에 자동 저장
 
 -- 5. 진단 요청/결과 로그
 CREATE TABLE diagnosis_logs (
