@@ -28,18 +28,25 @@ def create_supervisor(llm: ChatOpenAI, tools: list):
     )
 
     def supervisor_node(state: AgentState):
+        # 시스템 프롬프트와 현재 메시지 기록을 합쳐서 모델에 전달
         messages = [
             {"role": "system", "content": system_prompt}
         ] + state["messages"]
         
-        # LLM이 다음 단계를 결정하도록 강제 (함수 호출 방식 사용 가능)
-        # 여기서는 단순화를 위해 결정 로직을 포함
         response = llm.bind_tools(tools).invoke(messages)
         
-        # 도구 호출이 있으면 도구 노드로, 없으면 종료 혹은 직접 답변
+        # 도구 호출이 있으면 도구 이름을 'next'로 지정하고, 응답 메시지를 상태에 추가
         if response.tool_calls:
-            return {"next": response.tool_calls[0]["name"]}
-        return {"next": "FINISH"}
+            return {
+                "next": response.tool_calls[0]["name"],
+                "messages": [response]  # 이 메시지가 추가되어야 ToolNode가 인식함
+            }
+        
+        # 도구 호출이 없으면 종료
+        return {
+            "next": "FINISH",
+            "messages": [response]
+        }
 
     return supervisor_node
 

@@ -68,7 +68,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p = argparse.ArgumentParser(prog="rag.jm")
     sub = p.add_subparsers(dest="cmd", required=True)
-    
+     
     # 문서 적재 옵션 설명
     # --path: 문서가 있는 경로
     # --glob: glob 패턴
