@@ -27,6 +27,15 @@ class DefenseSimulationState(TypedDict, total=False):
     hint_used_count: int
 
     interpreted_actions: list[str]
+    intent_summary: str
+    normalized_user_action: str
+    unsafe_behavior: bool
+    unsafe_reason: str | None
+    abusive_language: bool
+    abusive_reason: str | None
+    dangerous_acceptance: bool
+    interpretation_confidence: float
+    interpretation_method: str
     detected_defenses: list[dict[str, Any]]
     missed_defenses: list[dict[str, Any]]
     dangerous_actions: list[str]
@@ -37,9 +46,11 @@ class DefenseSimulationState(TypedDict, total=False):
     failed_stage_count: int
     defense_score: int
     game_over_reason: str | None
+    ending_type: str | None
 
     evidence_report: dict[str, Any]
     feedback: str
+    narrative_feedback: str
     report: dict[str, Any]
     agent_trace: list[AgentTrace]
     errors: list[str]

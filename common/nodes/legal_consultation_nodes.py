@@ -89,21 +89,26 @@ def internal_law_guide_retriever_node(state: LegalConsultationState) -> LegalCon
 def evidence_grader_node(state: LegalConsultationState) -> LegalConsultationState:
     case_pack = state.get("internal_case_context")
     law_pack = state.get("internal_law_context")
-    case_count = len(case_pack.contexts) if case_pack else 0
-    law_count = len(law_pack.contexts) if law_pack else 0
+    case_contexts = _matching_contexts(case_pack, _is_case_context)
+    law_contexts = _matching_contexts(law_pack, _is_law_context)
+    case_count = len(case_contexts)
+    law_count = len(law_contexts)
+    case_score = _evidence_score(case_contexts, "case")
+    law_score = _evidence_score(law_contexts, "law")
 
     if case_count >= 1 and law_count >= 1:
-        quality = EvidenceQuality(True, 0.82, "MIXED", "internal case and law/guide evidence found")
+        score = round(min(0.95, 0.55 + case_score * 0.25 + law_score * 0.20), 2)
+        quality = EvidenceQuality(score >= 0.65, score, "MIXED", "case and law/guide evidence found with metadata-aware quality score")
     elif case_count >= 1:
-        quality = EvidenceQuality(True, 0.74, "INTERNAL_CASE", "internal case evidence found")
-    elif law_count >= 2:
-        quality = EvidenceQuality(True, 0.68, "INTERNAL_LAW", "multiple internal law/guide evidence found")
+        score = round(min(0.90, 0.45 + case_score * 0.35), 2)
+        quality = EvidenceQuality(score >= 0.65, score, "INTERNAL_CASE", "case evidence found with metadata-aware quality score")
     elif law_count >= 1:
-        quality = EvidenceQuality(False, 0.45, "INTERNAL_LAW", "only one internal law/guide context found; external support recommended")
+        score = round(min(0.80, 0.35 + law_score * 0.35), 2)
+        quality = EvidenceQuality(score >= 0.60, score, "INTERNAL_LAW", "law/guide evidence found with metadata-aware quality score")
     else:
         quality = EvidenceQuality(False, 0.0, "INSUFFICIENT", "no useful internal evidence found")
 
-    return _merge(state, evidence_quality=quality, needs_external_search=not quality.sufficient, basis_type=quality.basis_type, confidence=_confidence_from_quality(quality.score), trace=_trace("Evidence Grader Agent", "grade_internal_evidence", {"case_count": case_count, "law_count": law_count}, asdict(quality)))
+    return _merge(state, evidence_quality=quality, needs_external_search=not quality.sufficient, basis_type=quality.basis_type, confidence=_confidence_from_quality(quality.score), trace=_trace("Evidence Grader Agent", "grade_internal_evidence", {"case_count": case_count, "law_count": law_count, "case_score": case_score, "law_score": law_score}, asdict(quality)))
 
 
 def external_search_node(state: LegalConsultationState) -> LegalConsultationState:
@@ -269,14 +274,15 @@ def _extract_cases(pack: ContextPack | None) -> list[CitedCase]:
         return []
     cases: list[CitedCase] = []
     for context in pack.contexts:
-        if context.doc_type not in {"case", "judgement"}:
+        if not _is_case_context(context.doc_type, context.metadata):
             continue
+        meta = _merged_context_metadata(context)
         cases.append(CitedCase(
-            court=context.metadata.get("court"),
-            case_number=context.metadata.get("case_number"),
-            issue=context.metadata.get("issue"),
+            court=_first_meta(meta, "court", "court_name", "법원명"),
+            case_number=_first_meta(meta, "case_number", "case_no", "사건번호"),
+            issue=_first_meta(meta, "issue", "쟁점", "risk_type") or context.title,
             summary=context.text,
-            relevance="사용자 질문과 같은 전세계약 위험 쟁점에 관한 내부 판례/사례 근거입니다.",
+            relevance=_first_meta(meta, "relevance") or "사용자 질문과 관련된 전세계약 위험 쟁점의 RAG 판례/사례 근거입니다.",
             source_id=context.source_id,
         ))
     return cases
@@ -287,11 +293,79 @@ def _extract_laws(pack: ContextPack | None) -> list[CitedLaw]:
         return []
     laws: list[CitedLaw] = []
     for context in pack.contexts:
-        if context.doc_type not in {"law", "guide", "checklist"}:
+        if not _is_law_context(context.doc_type, context.metadata):
             continue
-        title = context.metadata.get("law") or context.title
+        meta = _merged_context_metadata(context)
+        title = _first_meta(meta, "law", "law_name", "article", "조문명") or context.title
         laws.append(CitedLaw(title=title, summary=context.text, source_id=context.source_id))
     return laws
+
+
+def _is_case_context(doc_type: str, metadata: dict[str, Any]) -> bool:
+    value = f"{doc_type} {metadata.get('doc_type', '')} {metadata.get('type', '')}".lower()
+    raw = metadata.get("raw_reference")
+    if isinstance(raw, dict):
+        value += f" {raw.get('doc_type', '')} {raw.get('type', '')}".lower()
+    return any(token in value for token in ["case", "judgement", "판례", "판결", "사례"])
+
+
+def _is_law_context(doc_type: str, metadata: dict[str, Any]) -> bool:
+    value = f"{doc_type} {metadata.get('doc_type', '')} {metadata.get('type', '')}".lower()
+    raw = metadata.get("raw_reference")
+    if isinstance(raw, dict):
+        value += f" {raw.get('doc_type', '')} {raw.get('type', '')}".lower()
+    return any(token in value for token in ["law", "guide", "checklist", "법령", "가이드", "체크리스트", "표준계약서"])
+
+
+def _matching_contexts(pack: ContextPack | None, predicate: Any) -> list[RetrievedContext]:
+    if not pack:
+        return []
+    return [context for context in pack.contexts if predicate(context.doc_type, context.metadata)]
+
+
+def _evidence_score(contexts: list[RetrievedContext], kind: str) -> float:
+    if not contexts:
+        return 0.0
+
+    relevance = sum(_clamp(context.score) for context in contexts) / len(contexts)
+    metadata_bonus = 0.0
+    text_bonus = 0.0
+    source_bonus = min(0.08, len({context.source_id for context in contexts}) * 0.03)
+
+    for context in contexts:
+        meta = _merged_context_metadata(context)
+        if kind == "case" and _first_meta(meta, "case_number", "case_no", "사건번호", "court", "court_name", "법원명"):
+            metadata_bonus = max(metadata_bonus, 0.12)
+        if kind == "law" and _first_meta(meta, "law", "law_name", "article", "조문명", "source_id"):
+            metadata_bonus = max(metadata_bonus, 0.10)
+        if len(context.text.strip()) >= 120:
+            text_bonus = max(text_bonus, 0.05)
+
+    return round(min(1.0, relevance + metadata_bonus + text_bonus + source_bonus), 2)
+
+
+def _clamp(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _merged_context_metadata(context: Any) -> dict[str, Any]:
+    meta = dict(getattr(context, "metadata", {}) or {})
+    raw = meta.get("raw_reference")
+    if isinstance(raw, dict):
+        raw_meta = raw.get("metadata")
+        if isinstance(raw_meta, dict):
+            meta.update(raw_meta)
+        for key, value in raw.items():
+            meta.setdefault(key, value)
+    return meta
+
+
+def _first_meta(metadata: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
 
 
 def _recommended_actions(state: LegalConsultationState) -> list[str]:

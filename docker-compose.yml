@@ -4,13 +4,13 @@ services:
   # PostgreSQL DB 컨테이너
   # =============================================
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: jeonse_db
     restart: unless-stopped
     environment:
       POSTGRES_DB: jeonse_risk
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-risk1234}
     ports:
       - "5432:5432"
     volumes:
@@ -21,6 +21,36 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # =============================================
+  # FastAPI 백엔드 (RAG 서버)
+  # =============================================
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: jeonse_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: jeonse_risk
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-risk1234}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-jeonse1234}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
 
   # =============================================
   # 파이프라인 컨테이너 (최초 CSV 적재, 한 번만 실행)
@@ -36,6 +66,7 @@ services:
       DB_PORT: 5432
       DB_NAME: jeonse_risk
       DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-risk1234}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -60,6 +91,7 @@ services:
       DB_PORT: 5432
       DB_NAME: jeonse_risk
       DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-risk1234}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -71,5 +103,27 @@ services:
         condition: service_healthy
     command: ["cron", "-f"]
 
+  # =============================================
+  # Neo4j 지식 그래프 컨테이너
+  # =============================================
+  neo4j:
+    image: neo4j:5.18
+    container_name: jeonse_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-jeonse1234}
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-jeonse1234}", "RETURN 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
 volumes:
   postgres_data:
+  neo4j_data:

@@ -11,6 +11,7 @@ from common.schemas.diagnosis import DiagnosisState
 from common.schemas.shared import AgentTrace, ContextPack, RiskFinding
 from common.tools.adaptive_rag import adaptive_rag, adaptive_rag_tool
 from common.tools.document import extract_contract_fields, parse_contract_file
+from common.tools.llm import extract_json_object, ollama_generate
 from common.tools.market import analyze_market
 
 
@@ -61,6 +62,87 @@ def special_clause_analysis_node(state: DiagnosisState) -> DiagnosisState:
     missing_defensive: list[RiskFinding] = []
 
     joined = "\n".join(str(term) for term in terms)
+    structured = _analyze_special_clauses_with_llm(terms, context_pack)
+    findings = structured["findings"]
+    revisions = structured["revisions"]
+    missing_defensive = structured["missing_defensive"]
+
+    if not findings:
+        findings, revisions = _fallback_clause_findings(terms)
+    if findings and not revisions:
+        revisions = _revisions_from_findings(findings)
+
+    if not missing_defensive:
+        missing_defensive = _fallback_missing_defensive_clauses(joined)
+
+    packs = dict(state.get("context_packs", {}))
+    packs["special_clause_analysis"] = context_pack
+    outputs = {"finding_count": len(findings), "missing_defensive_count": len(missing_defensive), "react_agent_used": bool(react_summary), "analysis_mode": structured["mode"]}
+    if react_summary:
+        outputs["react_agent_summary"] = react_summary[:500]
+    return _merge(state, context_packs=packs, clause_findings=findings, missing_defensive_clauses=missing_defensive, recommended_revisions=revisions, trace=_trace("Special Clause Analyzer ReAct Agent", "analyze_special_terms_with_rag", {"term_count": len(terms)}, outputs))
+
+
+def _analyze_special_clauses_with_llm(terms: list[Any], context_pack: ContextPack) -> dict[str, Any]:
+    if not terms:
+        return {"findings": [], "missing_defensive": [], "revisions": [], "mode": "empty_terms"}
+
+    context_text = _context_text(context_pack)
+    prompt = f"""
+다음 전세계약 특약을 RAG 근거에 기반해 분석하고 JSON 객체만 반환해.
+단순 키워드가 아니라 조항의 의미를 판단해.
+위험하지 않으면 findings는 빈 배열로 둬.
+점수는 HIGH=15, MEDIUM=10, LOW=5 범위에서 보수적으로 정해.
+
+반환 형식:
+{{
+        "findings": [
+            {{
+              "code": "CLAUSE_...",
+              "title": "짧은 제목",
+      "severity": "HIGH|MEDIUM|LOW",
+      "score_delta": 15,
+      "description": "왜 위험한지",
+      "evidence": ["문제 특약 원문"],
+      "required_action": "사용자가 요청할 조치"
+            }}
+          ],
+          "missing_defensive_clauses": [
+            {{
+              "code": "MISSING_...",
+              "title": "빠진 방어 특약 제목",
+              "severity": "HIGH|MEDIUM|LOW",
+              "score_delta": 10,
+              "description": "왜 필요한 방어 특약인지",
+              "required_action": "추가 또는 수정 요청할 문구"
+            }}
+          ],
+          "recommended_revisions": ["수정 권장 문구 또는 방향"]
+        }}
+
+특약:
+{chr(10).join(str(term) for term in terms)[:3000]}
+
+RAG 근거:
+{context_text[:5000]}
+""".strip()
+    try:
+        raw = ollama_generate(prompt, system="너는 전세계약 특약 위험을 RAG 근거로 구조화하는 분석기다. JSON만 반환한다.", temperature=0.0)
+        data = extract_json_object(raw)
+        findings = [_finding_from_llm(item, terms) for item in data.get("findings", []) if isinstance(item, dict)]
+        findings = [finding for finding in findings if finding is not None]
+        missing = [_missing_from_llm(item) for item in data.get("missing_defensive_clauses", []) if isinstance(item, dict)]
+        missing = [finding for finding in missing if finding is not None]
+        revisions = [str(item) for item in data.get("recommended_revisions", []) if str(item).strip()]
+        return {"findings": findings, "missing_defensive": missing, "revisions": revisions, "mode": "rag_llm_structured"}
+    except Exception:
+        return {"findings": [], "missing_defensive": [], "revisions": [], "mode": "fallback_keyword_rule"}
+
+
+def _fallback_clause_findings(terms: list[Any]) -> tuple[list[RiskFinding], list[str]]:
+    findings: list[RiskFinding] = []
+    revisions: list[str] = []
+    joined = "\n".join(str(term) for term in terms)
     risky_patterns = [
         ("CLAUSE_REPAIR_ALL", "수리비 전액 임차인 부담", "수리비를 임차인이 전액 부담하는 문구는 통상적인 사용 손모까지 임차인에게 전가할 수 있어 위험합니다.", ["수리비", "전액", "임차인"]),
         ("CLAUSE_LATE_RETURN", "보증금 반환 지연 가능 특약", "보증금 반환 시점을 과도하게 늦추는 문구는 반환 위험을 키울 수 있습니다.", ["보증금", "반환", "이후"]),
@@ -68,18 +150,99 @@ def special_clause_analysis_node(state: DiagnosisState) -> DiagnosisState:
     ]
     for code, title, description, tokens in risky_patterns:
         if all(token in joined for token in tokens):
-            findings.append(RiskFinding(code=code, title=title, severity="HIGH", score_delta=15, description=description, evidence=terms, required_action="특약 삭제 또는 책임 범위를 명확히 제한하는 수정 문구를 요청하세요.", source="special_clause_analyzer"))
+            findings.append(RiskFinding(code=code, title=title, severity="HIGH", score_delta=15, description=description, evidence=[str(term) for term in terms], required_action="특약 삭제 또는 책임 범위를 명확히 제한하는 수정 문구를 요청하세요.", source="special_clause_analyzer:fallback"))
             revisions.append(f"{title}: 임차인의 통상 사용으로 인한 손모는 제외하고, 임대인의 수선 의무와 보증금 반환 기한을 명확히 쓰는 방향으로 수정 권장")
+    return findings, revisions
 
-    if "잔금" not in joined or "권리변동" not in joined:
-        missing_defensive.append(RiskFinding(code="MISSING_NO_NEW_LIEN", title="잔금 전후 권리변동 금지 특약 부족", severity="MEDIUM", score_delta=10, description="잔금일 전후 임대인이 근저당권 등 새로운 권리를 설정하지 않는다는 방어 특약이 보이지 않습니다.", required_action="잔금일 다음날까지 근저당권 등 제한물권을 설정하지 않는다는 특약을 추가 검토하세요.", source="special_clause_analyzer"))
 
-    packs = dict(state.get("context_packs", {}))
-    packs["special_clause_analysis"] = context_pack
-    outputs = {"finding_count": len(findings), "missing_defensive_count": len(missing_defensive), "react_agent_used": bool(react_summary)}
-    if react_summary:
-        outputs["react_agent_summary"] = react_summary[:500]
-    return _merge(state, context_packs=packs, clause_findings=findings, missing_defensive_clauses=missing_defensive, recommended_revisions=revisions, trace=_trace("Special Clause Analyzer ReAct Agent", "analyze_special_terms_with_rag", {"term_count": len(terms)}, outputs))
+def _revisions_from_findings(findings: list[RiskFinding]) -> list[str]:
+    revisions: list[str] = []
+    for finding in findings:
+        if finding.required_action:
+            revisions.append(f"{finding.title}: {finding.required_action}")
+        else:
+            revisions.append(f"{finding.title}: RAG 근거를 바탕으로 해당 특약의 삭제 또는 책임 범위 명확화를 요청하세요.")
+    return revisions
+
+
+def _fallback_missing_defensive_clauses(joined_terms: str) -> list[RiskFinding]:
+    if "잔금" in joined_terms and "권리변동" in joined_terms:
+        return []
+    return [
+        RiskFinding(
+            code="MISSING_NO_NEW_LIEN",
+            title="잔금 전후 권리변동 금지 특약 부족",
+            severity="MEDIUM",
+            score_delta=10,
+            description="잔금일 전후 임대인이 근저당권 등 새로운 권리를 설정하지 않는다는 방어 특약이 보이지 않습니다.",
+            required_action="잔금일 다음날까지 근저당권 등 제한물권을 설정하지 않는다는 특약을 추가 검토하세요.",
+            source="special_clause_analyzer:fallback",
+        )
+    ]
+
+
+def _finding_from_llm(item: dict[str, Any], terms: list[Any]) -> RiskFinding | None:
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if not title or not description:
+        return None
+    severity = str(item.get("severity") or "MEDIUM").upper()
+    if severity not in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        severity = "MEDIUM"
+    score_delta = _safe_int(item.get("score_delta"), 10)
+    evidence = item.get("evidence")
+    evidence_list = [str(value) for value in evidence] if isinstance(evidence, list) else [str(term) for term in terms]
+    return RiskFinding(
+        code=str(item.get("code") or _slug_code(title)),
+        title=title,
+        severity=severity,  # type: ignore[arg-type]
+        score_delta=max(0, min(score_delta, 25)),
+        description=description,
+        evidence=evidence_list,
+        required_action=str(item.get("required_action") or "계약 전 해당 특약의 삭제 또는 수정을 요청하세요."),
+        source="special_clause_analyzer:rag_llm",
+    )
+
+
+def _missing_from_llm(item: dict[str, Any]) -> RiskFinding | None:
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if not title or not description:
+        return None
+    severity = str(item.get("severity") or "MEDIUM").upper()
+    if severity not in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        severity = "MEDIUM"
+    return RiskFinding(
+        code=str(item.get("code") or _slug_code(title).replace("CLAUSE_", "MISSING_")),
+        title=title,
+        severity=severity,  # type: ignore[arg-type]
+        score_delta=max(0, min(_safe_int(item.get("score_delta"), 10), 20)),
+        description=description,
+        evidence=[],
+        required_action=str(item.get("required_action") or "계약 전 해당 방어 특약 추가를 요청하세요."),
+        source="special_clause_analyzer:rag_llm",
+    )
+
+
+def _context_text(context_pack: ContextPack) -> str:
+    if not context_pack.contexts:
+        return "검색된 RAG 근거가 없습니다."
+    return "\n\n".join(
+        f"[{idx}] {ctx.title} ({ctx.doc_type}, score={ctx.score})\n{ctx.text}"
+        for idx, ctx in enumerate(context_pack.contexts, 1)
+    )
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _slug_code(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.upper())
+    return f"CLAUSE_{cleaned[:40].strip('_') or 'RISK'}"
 
 
 def market_analysis_node(state: DiagnosisState) -> DiagnosisState:
