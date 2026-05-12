@@ -10,17 +10,30 @@ from common.schemas.ui import EvidenceChip, EvidenceChipType
 
 DOC_TYPE_TO_CHIP_TYPE: dict[str, EvidenceChipType] = {
     "contract": "CONTRACT",
+    "계약서": "CONTRACT",
     "registry": "REGISTRY",
+    "등기부": "REGISTRY",
     "law": "LAW",
+    "법령": "LAW",
     "case": "CASE",
+    "판례": "CASE",
+    "판결": "CASE",
     "judgement": "CASE",
     "judgment": "CASE",
     "casebook": "CASEBOOK",
+    "사례": "CASEBOOK",
+    "사례집": "CASEBOOK",
     "guide": "GUIDE",
+    "가이드": "GUIDE",
     "checklist": "CHECKLIST",
+    "체크리스트": "CHECKLIST",
+    "서식": "CHECKLIST",
     "market": "MARKET",
+    "시세": "MARKET",
     "external": "EXTERNAL",
+    "외부자료": "EXTERNAL",
     "graph": "GRAPH",
+    "관계근거": "GRAPH",
 }
 
 SOURCE_TYPE_TO_CHIP_TYPE: dict[str, EvidenceChipType] = {
@@ -179,7 +192,7 @@ def _dedupe_chips(chips: list[EvidenceChip]) -> list[EvidenceChip]:
 
 
 def _chip_type_from_doc_type(doc_type: str) -> EvidenceChipType:
-    return DOC_TYPE_TO_CHIP_TYPE.get(doc_type.lower(), "UNKNOWN")
+    return DOC_TYPE_TO_CHIP_TYPE.get(doc_type.strip().lower(), "UNKNOWN")
 
 
 def _label_for_doc_type(doc_type: str, title: Any) -> str:

@@ -6,22 +6,28 @@ calling adaptive_rag(task_type, query, filters, top_k) and consume ContextPack o
 from __future__ import annotations
 
 import os
+import json
 import uuid
+import urllib.error
+import urllib.request
 from typing import Any
 
-import requests
+try:
+    import requests
+except ImportError:  # pragma: no cover - dependency fallback for minimal runtimes
+    requests = None
 from langchain_core.tools import tool
 
 from common.schemas.shared import ContextPack, RetrievedContext, RetrievalQuality
 
 TASK_SOURCE_MAP: dict[str, list[str]] = {
-    "special_clause_analysis": ["checklist", "guide", "law", "case"],
-    "required_check_analysis": ["checklist", "guide", "law"],
-    "report_generation": ["checklist", "guide"],
-    "legal_basis": ["law", "case", "guide"],
-    "legal_case_search": ["case", "judgement"],
-    "legal_law_guide_search": ["law", "guide", "checklist"],
-    "defense_simulation_evidence": ["casebook", "guide", "law", "checklist"],
+    "special_clause_analysis": ["사례집", "법령", "판례", "서식"],
+    "required_check_analysis": ["사례집", "법령", "서식"],
+    "report_generation": ["사례집", "법령"],
+    "legal_basis": ["법령", "판례", "사례집"],
+    "legal_case_search": ["판례", "사례집"],
+    "legal_law_guide_search": ["법령", "사례집"],
+    "defense_simulation_evidence": ["사례집", "법령", "판례"],
 }
 
 _FALLBACK_CONTEXTS: dict[str, list[RetrievedContext]] = {
@@ -138,13 +144,11 @@ def _remote_rag(task_type: str, query: str, filters: dict | None = None, top_k: 
     message = _build_remote_query(task_type=task_type, query=query, filters=filters)
 
     try:
-        response = requests.post(
-            f"{base_url}/api/v1/chat/query",
-            json={"session_id": session_id, "message": message, "history": []},
+        payload = _post_json(
+            url=f"{base_url}/api/v1/chat/query",
+            body={"session_id": session_id, "message": message, "history": []},
             timeout=timeout,
         )
-        response.raise_for_status()
-        payload = response.json()
     except Exception as exc:
         return _remote_failure_pack(task_type, query, exc) if _remote_strict_enabled() else None
 
@@ -209,6 +213,7 @@ def _reference_to_context(reference: Any, index: int) -> RetrievedContext:
     doc_type = str(ref.get("doc_type") or "document")
     text = str(ref.get("chunk_text") or ref.get("content") or "")
     score = _to_float(ref.get("relevance_score", ref.get("score", 0.0)))
+    metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
     return RetrievedContext(
         source_id=str(ref.get("source_id") or f"remote-rag-ref-{index}"),
         title=title,
@@ -217,9 +222,31 @@ def _reference_to_context(reference: Any, index: int) -> RetrievedContext:
         score=score,
         metadata={
             "provider": "remote",
+            **metadata,
             "raw_reference": ref,
         },
     )
+
+
+def _post_json(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+    if requests is not None:
+        response = requests.post(url, json=body, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+
+    encoded_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=encoded_body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
 
 
 def _remote_failure_pack(task_type: str, query: str, exc: Exception) -> ContextPack:

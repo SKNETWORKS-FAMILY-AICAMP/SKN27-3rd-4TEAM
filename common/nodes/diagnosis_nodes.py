@@ -44,7 +44,7 @@ def special_clause_analysis_node(state: DiagnosisState) -> DiagnosisState:
     fields = state.get("contract_fields", {})
     terms = fields.get("special_terms") or []
     query = "\n".join(str(term) for term in terms) or state.get("contract_text", "")[:1500]
-    context_pack = adaptive_rag("special_clause_analysis", query, filters={"doc_type": ["checklist", "guide", "law", "case"]}, top_k=5)
+    context_pack = adaptive_rag("special_clause_analysis", query, filters={"doc_type": ["사례집", "법령", "판례", "서식"]}, top_k=5)
     react_summary = invoke_react_agent(
         name="special_clause_react_agent",
         system_prompt=(
@@ -253,7 +253,7 @@ def market_analysis_node(state: DiagnosisState) -> DiagnosisState:
 def required_check_node(state: DiagnosisState) -> DiagnosisState:
     fields = state.get("contract_fields", {})
     query = f"전세계약서만 입력된 상태에서 추가 확인이 필요한 위험 항목. 주소={fields.get('address')} 유형={fields.get('housing_type')}"
-    context_pack = adaptive_rag("required_check_analysis", query, filters={"doc_type": ["checklist", "guide", "law"]}, top_k=5)
+    context_pack = adaptive_rag("required_check_analysis", query, filters={"doc_type": ["사례집", "법령", "서식"]}, top_k=5)
 
     findings = [
         RiskFinding("REQUIRED_REGISTRY", "등기부 권리관계 확인 필요", "HIGH", 20, "계약서만으로는 근저당권, 압류, 가압류, 신탁 등 권리관계를 확인할 수 없습니다.", required_action="계약 직전 등기부등본 갑구/을구를 확인하세요.", source="required_check_analyzer"),
@@ -289,7 +289,7 @@ def risk_judge_node(state: DiagnosisState) -> DiagnosisState:
 
 
 def report_writer_node(state: DiagnosisState) -> DiagnosisState:
-    context_pack = adaptive_rag("report_generation", "전세계약 위험 진단 결과 리포트 작성", filters={"doc_type": ["guide", "checklist"]}, top_k=3)
+    context_pack = adaptive_rag("report_generation", "전세계약 위험 진단 결과 리포트 작성", filters={"doc_type": ["사례집", "법령"]}, top_k=3)
     packs = dict(state.get("context_packs", {}))
     packs["report_generation"] = context_pack
 

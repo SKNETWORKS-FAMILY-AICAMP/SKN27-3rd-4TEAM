@@ -131,17 +131,29 @@ def _evidence_types(report: dict[str, Any]) -> set[str]:
 def _normalize_evidence_type(value: str) -> str:
     mapping = {
         "LAW": "LAW",
+        "법령": "LAW",
         "CASE": "CASE",
+        "판례": "CASE",
+        "판결": "CASE",
         "JUDGEMENT": "CASE",
         "JUDGMENT": "CASE",
         "CASEBOOK": "CASEBOOK",
+        "사례": "CASEBOOK",
+        "사례집": "CASEBOOK",
         "GUIDE": "GUIDE",
+        "가이드": "GUIDE",
         "CHECKLIST": "CHECKLIST",
+        "체크리스트": "CHECKLIST",
+        "서식": "CHECKLIST",
         "MARKET": "MARKET",
+        "시세": "MARKET",
         "CONTRACT": "CONTRACT",
+        "계약서": "CONTRACT",
         "REGISTRY": "REGISTRY",
+        "등기부": "REGISTRY",
     }
-    return mapping.get(value.upper(), value.upper())
+    normalized = value.strip()
+    return mapping.get(normalized, mapping.get(normalized.upper(), normalized.upper()))
 
 
 def _progress_for_items(items: list[dict[str, Any]]) -> dict[str, Any]:

@@ -18,10 +18,12 @@ class ChatRequest(BaseModel):
 
 
 class RagReference(BaseModel):
+    source_id: Optional[str] = None
     doc_type: str
     title: str
     chunk_text: str
     relevance_score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatResponse(BaseModel):

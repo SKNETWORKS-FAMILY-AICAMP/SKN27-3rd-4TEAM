@@ -1,6 +1,7 @@
 """LangGraph state nodes for the case-based legal consultation graph."""
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from typing import Any
 
@@ -52,7 +53,7 @@ def internal_case_retriever_node(state: LegalConsultationState) -> LegalConsulta
     pack = adaptive_rag(
         "legal_case_search",
         query,
-        filters={"doc_type": ["case", "judgement"], "question_type": state.get("question_type")},
+        filters={"doc_type": ["판례", "사례집"], "question_type": state.get("question_type")},
         top_k=5,
     )
     outputs = {"context_count": len(pack.contexts), "react_agent_used": bool(react_summary)}
@@ -77,7 +78,7 @@ def internal_law_guide_retriever_node(state: LegalConsultationState) -> LegalCon
     pack = adaptive_rag(
         "legal_law_guide_search",
         query,
-        filters={"doc_type": ["law", "guide", "checklist"], "question_type": state.get("question_type")},
+        filters={"doc_type": ["법령", "사례집"], "question_type": state.get("question_type")},
         top_k=5,
     )
     outputs = {"context_count": len(pack.contexts), "react_agent_used": bool(react_summary)}
@@ -277,9 +278,10 @@ def _extract_cases(pack: ContextPack | None) -> list[CitedCase]:
         if not _is_case_context(context.doc_type, context.metadata):
             continue
         meta = _merged_context_metadata(context)
+        title_case_info = _case_info_from_title(context.title)
         cases.append(CitedCase(
-            court=_first_meta(meta, "court", "court_name", "법원명"),
-            case_number=_first_meta(meta, "case_number", "case_no", "사건번호"),
+            court=_first_meta(meta, "court", "court_name", "법원명") or title_case_info.get("court"),
+            case_number=_first_meta(meta, "case_number", "case_no", "사건번호") or title_case_info.get("case_number"),
             issue=_first_meta(meta, "issue", "쟁점", "risk_type") or context.title,
             summary=context.text,
             relevance=_first_meta(meta, "relevance") or "사용자 질문과 관련된 전세계약 위험 쟁점의 RAG 판례/사례 근거입니다.",
@@ -317,6 +319,18 @@ def _is_law_context(doc_type: str, metadata: dict[str, Any]) -> bool:
     return any(token in value for token in ["law", "guide", "checklist", "법령", "가이드", "체크리스트", "표준계약서"])
 
 
+def _case_info_from_title(title: str) -> dict[str, str]:
+    info: dict[str, str] = {}
+    court_match = re.search(r"([가-힣]+(?:지방법원|고등법원|대법원|헌법재판소))", title)
+    if court_match:
+        info["court"] = court_match.group(1)
+
+    case_match = re.search(r"(\d{4}\s*[가-힣]{1,4}\s*\d+)", title)
+    if case_match:
+        info["case_number"] = re.sub(r"\s+", "", case_match.group(1))
+    return info
+
+
 def _matching_contexts(pack: ContextPack | None, predicate: Any) -> list[RetrievedContext]:
     if not pack:
         return []
@@ -334,7 +348,12 @@ def _evidence_score(contexts: list[RetrievedContext], kind: str) -> float:
 
     for context in contexts:
         meta = _merged_context_metadata(context)
-        if kind == "case" and _first_meta(meta, "case_number", "case_no", "사건번호", "court", "court_name", "법원명"):
+        parsed_case_info = _case_info_from_title(context.title)
+        if kind == "case" and (
+            _first_meta(meta, "case_number", "case_no", "사건번호", "court", "court_name", "법원명")
+            or parsed_case_info.get("case_number")
+            or parsed_case_info.get("court")
+        ):
             metadata_bonus = max(metadata_bonus, 0.12)
         if kind == "law" and _first_meta(meta, "law", "law_name", "article", "조문명", "source_id"):
             metadata_bonus = max(metadata_bonus, 0.10)
