@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .index import get_vectorstore
+from ..core.index import get_vectorstore
 
 # 검색 결과 구조
 @dataclass(frozen=True)

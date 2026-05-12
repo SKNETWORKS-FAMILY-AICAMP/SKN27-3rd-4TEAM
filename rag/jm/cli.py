@@ -6,9 +6,10 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
-from .generate import generate_answer
-from .ingest import ingest_paths
-from .search import search
+from .retrieval.generate import generate_answer
+from .retrieval.ingest import ingest_paths
+from .retrieval.search import search
+from .agent.supervisor import run_agent
 
 # 문서 적재
 def _cmd_ingest(args: argparse.Namespace) -> int:
@@ -55,6 +56,12 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
+# 에이전트 실행
+def _cmd_agent(args: argparse.Namespace) -> int:
+    answer = run_agent(query=args.query)
+    print(json.dumps({"answer": answer}, ensure_ascii=False, indent=2))
+    return 0
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     load_dotenv()
@@ -93,6 +100,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     pg.add_argument("--k", type=int, default=5)
     pg.add_argument("--where", default=None, help='JSON filter for metadata, e.g. {"doc_type":"law"}')
     pg.set_defaults(func=_cmd_generate)
+
+    # 에이전트 옵션
+    pa = sub.add_parser("agent", help="Run the Supervisor agent")
+    pa.add_argument("--query", required=True)
+    pa.set_defaults(func=_cmd_agent)
 
     args = p.parse_args(argv)
     return int(args.func(args))

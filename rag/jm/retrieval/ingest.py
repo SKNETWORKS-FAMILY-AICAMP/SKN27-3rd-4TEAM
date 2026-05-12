@@ -12,8 +12,8 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from .config import load_config
-from .index import get_vectorstore
+from ..core.config import load_config
+from ..core.index import get_vectorstore
 
 
 @dataclass(frozen=True)
