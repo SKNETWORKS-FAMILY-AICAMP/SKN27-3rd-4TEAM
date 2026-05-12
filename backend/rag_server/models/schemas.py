@@ -40,7 +40,7 @@ class ContractInfo(BaseModel):
     contract_start: Optional[str] = None
     contract_end: Optional[str] = None
     special_terms: Optional[str] = None
-    raw_text: Optional[str] = None
+    raw_text: Optional[str] = Field(default=None, exclude=True)  # 내부 처리용, API 응답에 미포함
 
 
 class RiskFactor(BaseModel):
