@@ -21,10 +21,10 @@ class DiagnosisService:
         summary_kws   = ContractParser.extract_summary_keywords(contract_info)
         all_kws       = list(dict.fromkeys(risk_kws + summary_kws))
 
-        # 특약사항을 RAG 텍스트 앞에 배치 → 4000자 제한 내에서 LLM이 반드시 참조하도록
+        # ── RAG 텍스트 조합: 특약사항 → 계약서 본문 ──────────────────
         rag_text = contract_text
         if contract_info.special_terms:
-            rag_text = f"[특약사항]\n{contract_info.special_terms}\n\n" + contract_text
+            rag_text = f"[특약사항]\n{contract_info.special_terms}\n\n" + rag_text
 
         result = await self._rag.diagnose(
             session_id=session_id,
