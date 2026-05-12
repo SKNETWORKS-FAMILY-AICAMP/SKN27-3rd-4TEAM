@@ -34,32 +34,21 @@ async def diagnose_text(body: DiagnosisRequest, svc: DiagnosisService = Depends(
         raise HTTPException(status_code=500, detail=f"진단 오류: {str(e)}")
 
 
-_ALLOWED_EXTENSIONS = {".pdf", ".docx"}
-_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-
-@router.post("/upload", response_model=DiagnosisResponse, summary="계약서 업로드 후 위험 진단 (PDF / DOCX)")
+@router.post("/upload", response_model=DiagnosisResponse, summary="PDF 계약서 업로드 후 위험 진단")
 async def diagnose_upload(
     file: UploadFile = File(...),
     session_id: str = Form(default_factory=lambda: str(uuid.uuid4())),
     svc: DiagnosisService = Depends(get_diagnosis_service),
 ):
-    filename = (file.filename or "").lower()
-    ext = next((e for e in _ALLOWED_EXTENSIONS if filename.endswith(e)), None)
-    if ext is None:
-        raise HTTPException(status_code=400, detail="PDF 또는 DOCX 파일만 업로드 가능합니다.")
-
-    file_bytes = await file.read()
-    if len(file_bytes) > 10 * 1024 * 1024:
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="PDF 파일만 업로드 가능합니다.")
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="파일 크기는 10MB 이하여야 합니다.")
-
     try:
-        if ext == ".docx":
-            return await svc.diagnose_docx(session_id=session_id, docx_bytes=file_bytes)
-        else:
-            return await svc.diagnose_pdf(session_id=session_id, pdf_bytes=file_bytes)
+        return await svc.diagnose_pdf(session_id=session_id, pdf_bytes=pdf_bytes)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"계약서 진단 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"PDF 진단 오류: {str(e)}")
 
 
 @router.get("/logs", summary="진단 이력 조회")

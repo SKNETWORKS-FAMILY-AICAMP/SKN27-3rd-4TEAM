@@ -17,6 +17,14 @@ from rag_server.core.llm import build_rag_chain, build_diagnosis_chain
 from rag_server.models.schemas import RagReference, RiskFactor
 
 
+def _first_metadata_value(metadata: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = metadata.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
 class RAGPipeline:
     def __init__(self, settings: Settings, vector_store: VectorStore, graph_store: GraphStore):
         self._settings     = settings
@@ -29,7 +37,8 @@ class RAGPipeline:
 
     @traceable(name="rag_chat")
     async def chat(self, session_id: str, question: str, history: list[dict]) -> dict[str, Any]:
-        raw_results  = self._vector_store.similarity_search(query=question, k=self._settings.RAG_TOP_K)
+        search_plan = self._build_search_plan(question)
+        raw_results = self._search_with_plan(search_plan)
         context_text = self._format_context(raw_results)
 
         lc_history = [
@@ -87,16 +96,129 @@ class RAGPipeline:
             )
         return "\n\n---\n\n".join(parts)
 
-    def _build_references(self, results: list[dict]) -> list[RagReference]:
-        return [
-            RagReference(
-                doc_type=r.get("metadata", {}).get("doc_type", "문서"),
-                title=r.get("metadata", {}).get("title", "제목없음"),
-                chunk_text=r["content"][:300] + ("..." if len(r["content"]) > 300 else ""),
-                relevance_score=r.get("score", 0.0),
+    def _build_search_plan(self, question: str) -> dict[str, Any]:
+        normalized = question.lower()
+        if any(token in question for token in ["다음 임차인", "보증금 반환", "반환 지연", "돌려준", "돌려받"]):
+            return {
+                "question_type": "DEPOSIT_RETURN",
+                "query": "전세계약 특약 보증금 반환 다음 임차인 입주 이후 반환 지연 임대차 종료 동시이행 보증금반환청구",
+                "doc_types": ["사례집", "법령", "판례"],
+            }
+        if any(token in question for token in ["특약", "수리비", "원상복구", "권리변동"]):
+            return {
+                "question_type": "SPECIAL_CLAUSE",
+                "query": f"전세계약 특약 위험 임차인 불리한 조항 표준계약서 체크리스트 {question}",
+                "doc_types": ["사례집", "법령", "판례"],
+            }
+        if any(token in question for token in ["신탁", "근저당", "가압류", "압류", "등기부", "임차권등기"]):
+            return {
+                "question_type": "REGISTRY_RIGHTS",
+                "query": f"전세계약 등기부 권리관계 신탁 근저당 가압류 임차권등기 전세사기 {question}",
+                "doc_types": ["사례집", "법령", "판례"],
+            }
+        if any(token in question for token in ["전세가율", "깡통전세", "시세", "보증보험", "hug"]) or "hug" in normalized:
+            return {
+                "question_type": "MARKET_RECOVERY",
+                "query": f"깡통전세 전세가율 보증보험 보증금 회수 위험 전세사기 {question}",
+                "doc_types": ["사례집", "법령"],
+            }
+        if any(token in question for token in ["대리인", "위임장", "소유자", "임대인", "신분증", "동명이인"]):
+            return {
+                "question_type": "IDENTITY_AUTHORITY",
+                "query": f"전세계약 임대인 소유자 일치 대리인 위임장 신분증 확인 전세사기 {question}",
+                "doc_types": ["사례집", "법령", "판례"],
+            }
+        return {
+            "question_type": "GENERAL",
+            "query": question,
+            "doc_types": ["사례집", "법령", "판례"],
+        }
+
+    def _search_with_plan(self, search_plan: dict[str, Any]) -> list[dict]:
+        query = search_plan["query"]
+        doc_types = search_plan.get("doc_types") or []
+        top_k = self._settings.RAG_TOP_K
+        per_type_k = max(2, min(4, top_k))
+
+        results: list[dict] = []
+        for doc_type in doc_types:
+            results.extend(
+                self._vector_store.similarity_search(
+                    query=query,
+                    k=per_type_k,
+                    filter_doc_type=doc_type,
+                )
             )
-            for r in results
-        ]
+
+        if not results:
+            results = self._vector_store.similarity_search(query=query, k=top_k)
+
+        return self._dedupe_and_rank_results(results, limit=top_k, preferred_doc_types=doc_types)
+
+    def _dedupe_and_rank_results(self, results: list[dict], limit: int, preferred_doc_types: list[str] | None = None) -> list[dict]:
+        deduped: dict[str, dict] = {}
+        for result in results:
+            meta = result.get("metadata", {})
+            key = "|".join([
+                str(meta.get("doc_type", "")),
+                str(meta.get("title", "")),
+                str(meta.get("file_name", "")),
+                str(meta.get("chunk_index", "")),
+                result.get("content", "")[:80],
+            ])
+            current = deduped.get(key)
+            if current is None or float(result.get("score", 0.0)) > float(current.get("score", 0.0)):
+                deduped[key] = result
+
+        ranked = sorted(deduped.values(), key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        if not preferred_doc_types:
+            return ranked[:limit]
+
+        selected: list[dict] = []
+        selected_keys: set[int] = set()
+        for doc_type in preferred_doc_types:
+            for index, item in enumerate(ranked):
+                if index in selected_keys:
+                    continue
+                if item.get("metadata", {}).get("doc_type") == doc_type:
+                    selected.append(item)
+                    selected_keys.add(index)
+                    break
+
+        for index, item in enumerate(ranked):
+            if len(selected) >= limit:
+                break
+            if index not in selected_keys:
+                selected.append(item)
+                selected_keys.add(index)
+        return selected[:limit]
+
+    def _build_references(self, results: list[dict]) -> list[RagReference]:
+        references: list[RagReference] = []
+        for index, result in enumerate(results, 1):
+            metadata = dict(result.get("metadata") or {})
+            source_id = _first_metadata_value(
+                metadata,
+                "source_id",
+                "chunk_id",
+                "id",
+                "document_id",
+                "doc_id",
+                "case_number",
+                "case_no",
+                "사건번호",
+            ) or f"rag-ref-{index}"
+            references.append(
+                RagReference(
+                    source_id=str(source_id),
+                    doc_type=str(metadata.get("doc_type") or "문서"),
+                    title=str(metadata.get("title") or metadata.get("file_name") or "제목없음"),
+                    chunk_text=result["content"][:700] + ("..." if len(result["content"]) > 700 else ""),
+                    relevance_score=float(result.get("score", 0.0)),
+                    metadata=metadata,
+                )
+            )
+        return references
 
     def _parse_diagnosis_response(self, raw: str, graph_risks: list[dict]) -> dict[str, Any]:
         import re

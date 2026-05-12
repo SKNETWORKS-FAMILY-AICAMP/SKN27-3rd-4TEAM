@@ -5,7 +5,7 @@ PDF 텍스트 추출 + 청크 분할 + rag_documents 적재
 파일 유형별 로더 선택:
 - 판례 (대법원, 헌재)     → PyPDFLoader       (텍스트 중심, 빠름)
 - 법령 조문, 서식         → PDFPlumberLoader  (레이아웃/표 보존)
-- 사례집, 안내서          → PyMuPDF4LLMLoader (텍스트+표 혼합)
+- 사례집, 안내서          → PyMuPDFLoader     (텍스트 중심, LangChain 0.3 호환)
 
 실행: python pdf_pipeline.py
 """
@@ -26,8 +26,7 @@ from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from langchain_community.document_loaders import PyPDFLoader, PDFPlumberLoader
-from langchain_pymupdf4llm import PyMuPDF4LLMLoader
+from langchain_community.document_loaders import PyMuPDFLoader, PyPDFLoader, PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
@@ -120,7 +119,7 @@ def load_pdf(filepath: str) -> list:
         elif pdf_type == "law":
             loader = PDFPlumberLoader(filepath)
         else:
-            loader = PyMuPDF4LLMLoader(filepath, mode="page")
+            loader = PyMuPDFLoader(filepath)
 
         docs = loader.load()
         return docs

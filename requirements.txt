@@ -1,75 +1,63 @@
+# Python 3.11
+# Keep LangChain on the 0.3 line because langgraph==0.3.34 is not compatible
+# with langchain 1.x / langchain-core 1.x.
+
 # =====================
-# Data
+# App / API
+# =====================
+fastapi==0.124.4
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.12.5
+pydantic-settings==2.12.0
+python-dotenv==1.1.0
+requests==2.32.5
+tqdm==4.67.3
+streamlit==1.57.0
+
+# =====================
+# LangGraph / LangChain / LLM
+# =====================
+langgraph==0.3.34
+langchain==0.3.25
+langchain-core>=0.3.59,<1.0.0
+langchain-community>=0.3.24,<0.4.0
+langchain-text-splitters>=0.3.8,<1.0.0
+langchain-openai>=0.3.17,<0.4.0
+langchain-ollama>=0.3.3,<0.4.0
+langchain-postgres>=0.0.15,<0.1.0
+langsmith>=0.1.17,<0.4.0
+openai>=1.68.2,<2.0.0
+tiktoken==0.9.0
+
+# =====================
+# RAG / PDF
+# =====================
+pypdf==5.4.0
+pdfplumber==0.11.4
+PyMuPDF>=1.26.6,<2.0.0
+beautifulsoup4==4.13.4
+
+# =====================
+# DB / Vector / Graph
+# =====================
+sqlalchemy==2.0.40
+psycopg2-binary==2.9.10
+pgvector>=0.2.5,<0.4
+neo4j==5.28.1
+alembic==1.15.2
+chromadb==0.6.3
+
+# =====================
+# Data / ML
 # =====================
 pandas==2.2.3
 numpy==2.2.5
-requests==2.32.5
-beautifulsoup4==4.13.4
 python-dateutil==2.9.0
 PublicDataReader==1.0.3
-
-# =====================
-# ML
-# =====================
 scikit-learn==1.6.1
 xgboost==3.2.0
 lightgbm==4.6.0
 matplotlib==3.10.1
 seaborn==0.13.2
 joblib==1.4.2
-
-# =====================
-# RAG / PDF
-# =====================
-python-docx==1.1.2
-pytesseract==0.3.13
-pdf2image==1.17.0
-Pillow>=10.0.0
-langchain==1.2.17
-langchain-community==0.4.1
-langchain-openai==1.2.1
-langchain-postgres==0.0.16
-langchain-pymupdf4llm==0.5.0
-openai==2.36.0
-pgvector>=0.3.6
-tiktoken==0.9.0
-pypdf==5.4.0
-pdfplumber==0.11.4
-pymupdf4llm==0.1.9
-
-# =====================
-# DB
-# =====================
-sqlalchemy==2.0.40
-psycopg2-binary==2.9.11
-alembic==1.15.2
-
-# =====================
-# App
-# =====================
-streamlit==1.57.0
-python-dotenv==1.1.0
-tqdm==4.67.3
-
-# =====================
-# FastAPI 백엔드
-# =====================
-fastapi==0.115.12
-uvicorn[standard]==0.34.2
-python-multipart==0.0.20
-pydantic-settings==2.10.1
-httpx==0.28.1
-aiofiles==24.1.0
-
-# =====================
-# Graph DB
-# =====================
-neo4j==5.28.1
-
-# =====================
-# LangSmith 트레이싱
-# =====================
-langsmith>=0.3.45
-
-
-pg8000

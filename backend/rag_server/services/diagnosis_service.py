@@ -21,14 +21,9 @@ class DiagnosisService:
         summary_kws   = ContractParser.extract_summary_keywords(contract_info)
         all_kws       = list(dict.fromkeys(risk_kws + summary_kws))
 
-        # ── RAG 텍스트 조합: 특약사항 → 계약서 본문 ──────────────────
-        rag_text = contract_text
-        if contract_info.special_terms:
-            rag_text = f"[특약사항]\n{contract_info.special_terms}\n\n" + rag_text
-
         result = await self._rag.diagnose(
             session_id=session_id,
-            contract_text=rag_text,
+            contract_text=contract_text,
             contract_keywords=all_kws,
         )
 
@@ -46,10 +41,6 @@ class DiagnosisService:
 
     async def diagnose_pdf(self, session_id: str, pdf_bytes: bytes) -> DiagnosisResponse:
         contract_info = ContractParser.from_pdf_bytes(pdf_bytes)
-        return await self.diagnose_text(session_id, contract_info.raw_text or "")
-
-    async def diagnose_docx(self, session_id: str, docx_bytes: bytes) -> DiagnosisResponse:
-        contract_info = ContractParser.from_docx_bytes(docx_bytes)
         return await self.diagnose_text(session_id, contract_info.raw_text or "")
 
     def _save_log(self, response: DiagnosisResponse) -> None:

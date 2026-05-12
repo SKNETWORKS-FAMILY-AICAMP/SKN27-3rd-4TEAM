@@ -18,10 +18,12 @@ class ChatRequest(BaseModel):
 
 
 class RagReference(BaseModel):
+    source_id: Optional[str] = None
     doc_type: str
     title: str
     chunk_text: str
     relevance_score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatResponse(BaseModel):
@@ -40,7 +42,7 @@ class ContractInfo(BaseModel):
     contract_start: Optional[str] = None
     contract_end: Optional[str] = None
     special_terms: Optional[str] = None
-    raw_text: Optional[str] = Field(default=None, exclude=True)  # 내부 처리용, API 응답에 미포함
+    raw_text: Optional[str] = None
 
 
 class RiskFactor(BaseModel):
