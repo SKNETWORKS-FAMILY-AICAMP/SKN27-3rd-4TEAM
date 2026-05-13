@@ -81,6 +81,7 @@ NUM_COLS = [
     "sale_mom_change",
     "jeonse_roll_mean_3",
     "jeonse_roll_mean_6",
+    "jeonse_roll_mean_12",  # [#4] 추가: sale과 동일하게 12개월 이동평균 포함
     "avg_building_age",
     "avg_floor",
 ]
@@ -91,6 +92,89 @@ class ModelBundle:
     horizon: int
     lightgbm: Pipeline
     catboost: Pipeline | None
+
+
+# ─────────────────────────────────────────────
+# [#2] 면적 구간 정의 및 구간별 평당가 산출
+# ─────────────────────────────────────────────
+AREA_BUCKET_DEFS: list[tuple[float, float, str]] = [
+    (0,   33,          "~33㎡ (10평 미만)"),
+    (33,  66,          "33~66㎡ (10~20평)"),
+    (66,  99,          "66~99㎡ (20~30평)"),
+    (99,  float("inf"), "99㎡~ (30평 이상)"),
+]
+
+
+def get_area_bucket(area_m2: float) -> str:
+    """전용면적(㎡)을 4개 구간 레이블로 변환."""
+    for lo, hi, label in AREA_BUCKET_DEFS:
+        if lo <= area_m2 < hi:
+            return label
+    return AREA_BUCKET_DEFS[-1][2]
+
+
+def compute_area_bucket_prices(transactions: pd.DataFrame, months: int = 12) -> pd.DataFrame:
+    """동 × 유형 × 면적구간별 최근 N개월 평당가 및 현재 전세가율 산출.
+
+    Streamlit 화면의 '구간별 평당가 현황' 테이블 데이터 소스로 사용할 수 있음.
+
+    반환 컬럼:
+        dong_name, property_type, area_bucket,
+        sale_per_pyeong, sale_count,
+        jeonse_per_pyeong, jeonse_count,
+        jeonse_to_sale_ratio, risk_level
+    """
+    cutoff = transactions["month"].max() - pd.DateOffset(months=months - 1)
+    recent = transactions[transactions["month"] >= cutoff].copy()
+    recent["area_bucket"] = recent["exclusive_area_m2"].apply(get_area_bucket)
+
+    index_cols = ["dong_name", "property_type", "area_bucket"]
+
+    sale_grp = (
+        recent[recent["trade_type"] == "sale"]
+        .groupby(index_cols)
+        .apply(
+            lambda g: pd.Series({
+                "sale_per_pyeong": weighted_average(
+                    g["price_per_pyeong"], g["exclusive_area_pyeong"]
+                ),
+                "sale_count": len(g),
+            }),
+            include_groups=False,
+        )
+        .reset_index()
+    )
+
+    jeonse_grp = (
+        recent[recent["trade_type"] == "jeonse"]
+        .groupby(index_cols)
+        .apply(
+            lambda g: pd.Series({
+                "jeonse_per_pyeong": weighted_average(
+                    g["price_per_pyeong"], g["exclusive_area_pyeong"]
+                ),
+                "jeonse_count": len(g),
+            }),
+            include_groups=False,
+        )
+        .reset_index()
+    )
+
+    result = sale_grp.merge(jeonse_grp, on=index_cols, how="outer")
+    result["jeonse_to_sale_ratio"] = (
+        result["jeonse_per_pyeong"] / result["sale_per_pyeong"]
+    ).round(3)
+
+    def _risk_label(ratio: float) -> str:
+        if pd.isna(ratio):  return "데이터 부족"
+        if ratio >= 1.00:   return "깡통 가능성 매우 높음"
+        if ratio >= 0.90:   return "고위험"
+        if ratio >= 0.80:   return "위험"
+        if ratio >= 0.70:   return "주의"
+        return "안전"
+
+    result["risk_level"] = result["jeonse_to_sale_ratio"].apply(_risk_label)
+    return result.sort_values(index_cols).reset_index(drop=True)
 
 
 def safe_auc(metric_func, y_true: pd.Series, y_score: np.ndarray) -> float:
@@ -134,6 +218,16 @@ def load_transactions(data_dir: Path) -> pd.DataFrame:
         price_col = "deal_amount" if trade_type == "sale" else "deposit_amount"
         frame["price_amount"] = pd.to_numeric(frame[price_col], errors="coerce")
         frame["trade_type"] = trade_type
+
+        # [#3] 순전세만 사용: monthly_rent > 0 인 반전세 제외
+        if trade_type == "jeonse" and "monthly_rent" in frame.columns:
+            before = len(frame)
+            frame = frame[
+                pd.to_numeric(frame["monthly_rent"], errors="coerce").fillna(0) == 0
+            ].copy()
+            excluded = before - len(frame)
+            if excluded > 0:
+                print(f"  [필터] {path.name}: 반전세(월세 포함) {excluded}건 제외")
         frame["property_type"] = property_type
         frame["transaction_date"] = pd.to_datetime(frame["transaction_date"], errors="coerce")
         frame["exclusive_area_m2"] = pd.to_numeric(frame["exclusive_area_m2"], errors="coerce")
@@ -240,7 +334,7 @@ def add_time_features(panel: pd.DataFrame) -> pd.DataFrame:
             lambda s: s.shift(1).rolling(window, min_periods=1).mean()
         )
 
-    for window in [3, 6]:
+    for window in [3, 6, 12]:  # [#4] 12개월 추가 (NUM_COLS와 일치)
         panel[f"jeonse_roll_mean_{window}"] = grouped["jeonse_per_pyeong"].transform(
             lambda s: s.shift(1).rolling(window, min_periods=1).mean()
         )

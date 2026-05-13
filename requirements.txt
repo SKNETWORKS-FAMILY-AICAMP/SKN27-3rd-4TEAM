@@ -20,6 +20,8 @@ lightgbm==4.6.0
 matplotlib==3.10.1
 seaborn==0.13.2
 joblib==1.4.2
+nbformat>=4.2.0
+jupyter
 
 # =====================
 # RAG / PDF
@@ -48,6 +50,7 @@ alembic==1.15.2
 streamlit==1.57.0
 python-dotenv==1.1.0
 tqdm==4.67.3
+plotly>=5.18.0
 
 # =====================
 # Embedding (CPU 전용)
