@@ -46,7 +46,7 @@ psycopg2-binary==2.9.10
 pgvector>=0.2.5,<0.4
 neo4j==5.28.1
 alembic==1.15.2
-chromadb==0.6.3
+# chromadb==0.6.3  # pgvector 전환으로 미사용 — 필요 시 주석 해제
 
 # =====================
 # Data / ML

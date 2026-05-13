@@ -1,10 +1,31 @@
-"""Jeonse fraud defense simulation graph entrypoint."""
+"""Jeonse fraud defense simulation graph entrypoint.
+
+[조건부 분기 흐름]
+
+    START
+      │
+    campaign_loader → stage_loader → roleplay → input_router
+      │
+      ├─ input_type == "COMMAND" ──→ command_handler ──────────────────┐
+      └─ input_type == "ACTION"  ──→ user_action_interpreter            │
+                                           │                           │
+                                     defense_judge                     │
+                                           │                           │
+                                    stage_result ←─────────────────────┘
+                                           │
+                                  evidence_connector → feedback_report → END
+
+COMMAND 경로 (힌트·상태·근거·포기 등): user_action_interpreter, defense_judge를 건너뛰어
+불필요한 LLM 호출을 줄이고 명령어 응답 속도를 높입니다.
+
+ACTION 경로 (사용자 방어 대응): LLM 기반 의도 해석 → 방어 판정 → 결과 집계 순으로 실행합니다.
+"""
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from common.nodes.defense_simulation_nodes import (
     campaign_loader_node,
@@ -22,7 +43,8 @@ from common.schemas.defense_simulation import DefenseSimulationState
 
 SCENARIO_PATH = Path(__file__).resolve().parents[2] / "data" / "defense_scenarios.json"
 
-NODE_SEQUENCE: list[tuple[str, Callable[[DefenseSimulationState], DefenseSimulationState]]] = [
+# LangGraph 미설치 fallback 용 선형 실행 순서
+_LINEAR_SEQUENCE: list[tuple[str, Callable[[DefenseSimulationState], DefenseSimulationState]]] = [
     ("campaign_loader", campaign_loader_node),
     ("stage_loader", stage_loader_node),
     ("roleplay", roleplay_node),
@@ -36,20 +58,81 @@ NODE_SEQUENCE: list[tuple[str, Callable[[DefenseSimulationState], DefenseSimulat
 ]
 
 
+# ── 조건부 라우팅 함수 ────────────────────────────────────────────────
+
+def _route_after_input_router(
+    state: DefenseSimulationState,
+) -> Literal["command_handler", "user_action_interpreter"]:
+    """input_router 결과에 따라 분기합니다.
+
+    - input_type == "COMMAND" → command_handler 실행 후 stage_result로 직행
+      (user_action_interpreter, defense_judge 건너뜀)
+    - input_type == "ACTION"  → user_action_interpreter → defense_judge → stage_result
+    """
+    if state.get("input_type") == "COMMAND":
+        print(f"[DefenseGraph] 명령어 입력 감지 ({state.get('command')}) → command_handler")
+        return "command_handler"
+    print("[DefenseGraph] 사용자 대응 입력 → user_action_interpreter")
+    return "user_action_interpreter"
+
+
+def _route_after_command_handler(
+    state: DefenseSimulationState,
+) -> Literal["stage_result"]:
+    """command_handler 이후 항상 stage_result로 이동합니다.
+    (user_action_interpreter, defense_judge 건너뜀)
+    """
+    return "stage_result"
+
+
+# ── 그래프 빌더 ───────────────────────────────────────────────────────
+
 def build_defense_simulation_graph():
-    """Build the LangGraph workflow for one RPG simulation turn."""
+    """조건부 분기를 포함한 LangGraph StateGraph 빌드."""
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(DefenseSimulationState)
-    for node_name, node_fn in NODE_SEQUENCE:
+
+    # 노드 등록
+    for node_name, node_fn in _LINEAR_SEQUENCE:
         graph.add_node(node_name, node_fn)
 
-    graph.add_edge(START, NODE_SEQUENCE[0][0])
-    for (current_name, _), (next_name, _) in zip(NODE_SEQUENCE, NODE_SEQUENCE[1:]):
-        graph.add_edge(current_name, next_name)
-    graph.add_edge(NODE_SEQUENCE[-1][0], END)
+    # ── 공통 선입 구간 ─────────────────────────────────────────────────
+    graph.add_edge(START, "campaign_loader")
+    graph.add_edge("campaign_loader", "stage_loader")
+    graph.add_edge("stage_loader", "roleplay")
+    graph.add_edge("roleplay", "input_router")
+
+    # ── 조건부 분기: input_router → command_handler | user_action_interpreter ──
+    graph.add_conditional_edges(
+        "input_router",
+        _route_after_input_router,
+        {
+            "command_handler": "command_handler",
+            "user_action_interpreter": "user_action_interpreter",
+        },
+    )
+
+    # ── COMMAND 경로: command_handler → stage_result (직행) ───────────
+    graph.add_conditional_edges(
+        "command_handler",
+        _route_after_command_handler,
+        {"stage_result": "stage_result"},
+    )
+
+    # ── ACTION 경로: interpreter → judge → stage_result ───────────────
+    graph.add_edge("user_action_interpreter", "defense_judge")
+    graph.add_edge("defense_judge", "stage_result")
+
+    # ── 합류 이후 공통 구간 ────────────────────────────────────────────
+    graph.add_edge("stage_result", "evidence_connector")
+    graph.add_edge("evidence_connector", "feedback_report")
+    graph.add_edge("feedback_report", END)
+
     return graph.compile()
 
+
+# ── 공개 실행 함수 ────────────────────────────────────────────────────
 
 def run_defense_simulation(
     category_id: str = "RIGHTS_CONCEALMENT",
@@ -77,8 +160,9 @@ def run_defense_simulation(
         graph = build_defense_simulation_graph()
         return graph.invoke(initial_state)
     except ModuleNotFoundError:
+        # LangGraph 미설치: 선형 순차 실행 (각 노드 내부의 input_type 가드로 자동 처리)
         state = initial_state
-        for _, node in NODE_SEQUENCE:
+        for _, node in _LINEAR_SEQUENCE:
             state = node(state)
         return state
 
@@ -137,7 +221,10 @@ def _print_turn_summary(report: dict) -> None:
         print(f"놓친 방어 행동: {labels}")
 
     print("\n상태")
-    print(f"단계: {report.get('stage_status')} / 게임: {report.get('game_status')} / 위험노출: {report.get('risk_exposure')} / 방어점수: {report.get('defense_score')}")
+    print(
+        f"단계: {report.get('stage_status')} / 게임: {report.get('game_status')} "
+        f"/ 위험노출: {report.get('risk_exposure')} / 방어점수: {report.get('defense_score')}"
+    )
     if report.get("ending_type"):
         print(f"엔딩: {report.get('ending_type')}")
 

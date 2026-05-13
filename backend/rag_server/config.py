@@ -39,7 +39,10 @@ class Settings(BaseSettings):
 
     # ── pgvector (Vector DB — PostgreSQL 내장) ────
     PG_VECTOR_COLLECTION: str = "jeonse_docs"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # text-embedding-3-large: OpenAI 최고 품질 임베딩, 3072 dim
+    # text-embedding-3-small(1536dim) 에서 변경 → 재적재 필요:
+    #   python rag/ingestion/embed_to_pg.py --reset
+    EMBEDDING_MODEL: str = "text-embedding-3-large"
 
     # ── Neo4j (Graph DB) ──────────────────────────
     NEO4J_URI: str = "bolt://localhost:7687"
@@ -53,7 +56,8 @@ class Settings(BaseSettings):
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # ── RAG 파라미터 ──────────────────────────────
-    RAG_TOP_K: int = 5
+    RAG_TOP_K: int = 10           # 5 → 10: 타입별 균형 검색을 위해 상향
+    RAG_SCORE_THRESHOLD: float = 0.25  # 유사도 임계값 (이하 문서 제외)
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 80
 

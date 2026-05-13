@@ -13,6 +13,7 @@ from rag_server.config import get_settings
 from rag_server.api.routes.health import router as health_router
 from rag_server.api.routes.chat import router as chat_router
 from rag_server.api.routes.diagnosis import router as diagnosis_router
+from rag_server.api.routes.retrieve import router as retrieve_router
 
 settings = get_settings()
 
@@ -62,6 +63,7 @@ app.add_middleware(
 app.include_router(health_router,    prefix="/api/v1",          tags=["헬스체크"])
 app.include_router(chat_router,      prefix="/api/v1/chat",     tags=["채팅"])
 app.include_router(diagnosis_router, prefix="/api/v1/diagnosis", tags=["계약서 진단"])
+app.include_router(retrieve_router,  prefix="/api/v1/rag",      tags=["RAG 검색"])
 
 
 if __name__ == "__main__":

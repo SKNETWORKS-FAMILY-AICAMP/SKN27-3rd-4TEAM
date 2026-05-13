@@ -138,22 +138,37 @@ class RAGPipeline:
         query = search_plan["query"]
         doc_types = search_plan.get("doc_types") or []
         top_k = self._settings.RAG_TOP_K
-        per_type_k = max(2, min(4, top_k))
+        threshold = getattr(self._settings, "RAG_SCORE_THRESHOLD", 0.25)
+
+        # ── 타입별 균형 검색: TOP_K를 타입 수로 나눠 각 타입에서 균등 수집 ──
+        # 예: TOP_K=10, 타입 3개 → 타입당 4건 수집 후 dedup → 상위 10건 선택
+        per_type_k = max(3, top_k // max(len(doc_types), 1) + 2) if doc_types else top_k
 
         results: list[dict] = []
         for doc_type in doc_types:
-            results.extend(
-                self._vector_store.similarity_search(
-                    query=query,
-                    k=per_type_k,
-                    filter_doc_type=doc_type,
-                )
+            type_results = self._vector_store.similarity_search(
+                query=query,
+                k=per_type_k,
+                filter_doc_type=doc_type,
             )
+            # 유사도 임계값 필터링: 낮은 관련성 문서 제외
+            type_results = [r for r in type_results if float(r.get("score", 0.0)) >= threshold]
+            results.extend(type_results)
 
+        # 타입 필터 결과 없으면 전체 검색 fallback
         if not results:
-            results = self._vector_store.similarity_search(query=query, k=top_k)
+            all_results = self._vector_store.similarity_search(query=query, k=top_k)
+            results = [r for r in all_results if float(r.get("score", 0.0)) >= threshold]
+            # 임계값 필터 후에도 없으면 필터 없이 반환
+            if not results:
+                results = all_results
 
-        return self._dedupe_and_rank_results(results, limit=top_k, preferred_doc_types=doc_types)
+        ranked = self._dedupe_and_rank_results(results, limit=top_k, preferred_doc_types=doc_types)
+        print(f"[RAG] 검색완료 query_type={search_plan.get('question_type','?')} "
+              f"retrieved={len(results)} deduped={len(ranked)} "
+              f"score_range=[{min((r.get('score',0) for r in ranked), default=0):.2f}"
+              f"~{max((r.get('score',0) for r in ranked), default=0):.2f}]")
+        return ranked
 
     def _dedupe_and_rank_results(self, results: list[dict], limit: int, preferred_doc_types: list[str] | None = None) -> list[dict]:
         deduped: dict[str, dict] = {}

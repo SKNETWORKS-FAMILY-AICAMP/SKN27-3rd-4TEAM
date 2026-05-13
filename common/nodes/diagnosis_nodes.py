@@ -11,6 +11,7 @@ from common.schemas.diagnosis import DiagnosisState
 from common.schemas.shared import AgentTrace, ContextPack, RiskFinding
 from common.tools.adaptive_rag import adaptive_rag, adaptive_rag_tool
 from common.tools.document import extract_contract_fields, parse_contract_file
+from common.tools.dl_market_bridge import run_dl_analysis
 from common.tools.llm import extract_json_object, ollama_generate
 from common.tools.market import analyze_market
 
@@ -22,7 +23,7 @@ def contract_intake_node(state: DiagnosisState) -> DiagnosisState:
 
     if file_path:
         suffix = Path(file_path).suffix.lower()
-        if suffix not in {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg"}:
+        if suffix not in {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".docx"}:
             errors.append(f"지원하지 않는 계약서 형식입니다: {suffix}")
     else:
         missing.append("contract_file: 테스트용 mock 계약서로 진행")
@@ -246,8 +247,34 @@ def _slug_code(value: str) -> str:
 
 
 def market_analysis_node(state: DiagnosisState) -> DiagnosisState:
-    analysis, findings = analyze_market(state.get("contract_fields", {}))
-    return _merge(state, market_analysis=analysis, market_findings=findings, trace=_trace("Market Analyzer Agent", "compare_jeonse_and_sale_data", asdict(analysis), {"finding_count": len(findings)}))
+    fields = state.get("contract_fields", {})
+    analysis, findings = analyze_market(fields)
+
+    # ── 딥러닝 시세·위험 분석 주입 ────────────────────────────────
+    try:
+        dl_pack, dl_findings = run_dl_analysis(fields)
+        packs = dict(state.get("context_packs", {}))
+        packs["dl_market"] = dl_pack
+        all_findings = findings + dl_findings
+        dl_count = len(dl_findings)
+    except Exception as e:
+        print(f"[market_analysis_node] DL 분석 실패 (무시): {e}")
+        packs = dict(state.get("context_packs", {}))
+        all_findings = findings
+        dl_count = 0
+
+    return _merge(
+        state,
+        market_analysis=analysis,
+        market_findings=all_findings,
+        context_packs=packs,
+        trace=_trace(
+            "Market Analyzer Agent",
+            "compare_jeonse_and_sale_data_with_dl",
+            asdict(analysis),
+            {"finding_count": len(all_findings), "dl_findings": dl_count},
+        ),
+    )
 
 
 def required_check_node(state: DiagnosisState) -> DiagnosisState:
@@ -332,6 +359,3 @@ def _merge(state: DiagnosisState, *, trace: AgentTrace | None = None, **updates:
 
 def _trace(agent: str, action: str, inputs: dict[str, Any], outputs: dict[str, Any]) -> AgentTrace:
     return AgentTrace(agent=agent, action=action, inputs=inputs, outputs=outputs)
-
-
-

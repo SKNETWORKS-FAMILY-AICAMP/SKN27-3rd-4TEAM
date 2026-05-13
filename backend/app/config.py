@@ -32,11 +32,15 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TEMPERATURE: float = 0.0
 
-    # ── ChromaDB (Vector DB) ──────────────────────
-    CHROMA_HOST: str = "chromadb"
-    CHROMA_PORT: int = 8000
-    CHROMA_COLLECTION: str = "jeonse_docs"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # ── pgvector (Vector DB — PostgreSQL 내장) ────
+    PG_VECTOR_COLLECTION: str = "jeonse_docs"
+    # text-embedding-3-large: OpenAI 최고 품질 임베딩, 3072 dim
+    EMBEDDING_MODEL: str = "text-embedding-3-large"
+
+    @property
+    def PG_VECTOR_CONNECTION(self) -> str:
+        """LangChain PGVector용 연결 문자열"""
+        return self.DATABASE_URL
 
     # ── Neo4j (Graph DB) ──────────────────────────
     NEO4J_URI: str = "bolt://neo4j:7687"
@@ -50,7 +54,8 @@ class Settings(BaseSettings):
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # ── RAG 파라미터 ──────────────────────────────
-    RAG_TOP_K: int = 5              # 벡터 검색 상위 K개
+    RAG_TOP_K: int = 10             # 타입별 균형 검색을 위해 5→10 상향
+    RAG_SCORE_THRESHOLD: float = 0.25  # 유사도 임계값 (이하 문서 제외)
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 80
 

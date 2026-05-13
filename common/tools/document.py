@@ -35,6 +35,29 @@ def parse_contract_file(file_path: str | None) -> tuple[str, list[str], float | 
         text = path.read_text(encoding="utf-8", errors="ignore")
         return text, [text], None
 
+    if suffix == ".docx":
+        try:
+            from docx import Document as DocxDocument
+
+            doc = DocxDocument(str(path))
+            # 단락 텍스트 추출 (빈 단락 제외)
+            paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            # 표 안의 텍스트도 추출
+            for table in doc.tables:
+                for row in table.rows:
+                    row_texts = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if row_texts:
+                        paragraphs.append(" | ".join(row_texts))
+            text = "\n".join(paragraphs)
+            if text.strip():
+                # docx는 페이지 구분이 없으므로 전체를 하나의 페이지로 처리
+                return text, [text], None
+        except Exception as e:
+            print(f"[document] docx 파싱 실패: {e}")
+            return MOCK_CONTRACT_TEXT, [MOCK_CONTRACT_TEXT], None
+
+        return MOCK_CONTRACT_TEXT, [MOCK_CONTRACT_TEXT], None
+
     if suffix == ".pdf":
         try:
             from pypdf import PdfReader

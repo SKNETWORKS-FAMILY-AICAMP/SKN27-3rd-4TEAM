@@ -229,7 +229,7 @@ Ollama를 사용할 경우:
 
 ```powershell
 $env:ENABLE_LLM='1'
-$env:OLLAMA_MODEL='gemma4:e2b'
+$env:OLLAMA_MODEL='gemma4:e4b'
 python -m common.graphs.legal_consultation_graph
 ```
 

@@ -3,11 +3,19 @@
 역할: PostgreSQL rag_documents 테이블의 청크를 임베딩하여
       langchain_pg_embedding 테이블에 저장
 
-실행: python rag/ingestion/embed_to_pg.py
+임베딩 모델: OpenAI text-embedding-3-large (3072 dim)
+  - text-embedding-3-small(1536dim) → text-embedding-3-large(3072dim) 으로 변경
+  - 기존 벡터 데이터가 있으면 차원이 달라 오류 발생합니다.
+  - 재적재 시 --reset 플래그를 사용하여 컬렉션을 초기화하세요.
+
+실행:
+  python rag/ingestion/embed_to_pg.py            # 신규 청크만 임베딩
+  python rag/ingestion/embed_to_pg.py --reset    # 컬렉션 초기화 후 전체 재적재
 """
 
 import os
 import sys
+import argparse
 import psycopg2
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -35,9 +43,23 @@ CONNECTION_STRING = (
 )
 
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
-EMBEDDING_MODEL = "text-embedding-3-small"
-COLLECTION_NAME = "jeonse_docs"
+# text-embedding-3-large: OpenAI 최고 품질 임베딩, 3072 dim
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+COLLECTION_NAME = os.getenv("PG_VECTOR_COLLECTION", "jeonse_docs")
 BATCH_SIZE      = 50
+
+
+# ── 임베딩 모델 초기화 ────────────────────────────────────────
+
+def build_embeddings() -> OpenAIEmbeddings:
+    """text-embedding-3-large 임베딩 모델 초기화."""
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
+    print(f"📦 임베딩 모델: {EMBEDDING_MODEL} (3072 dim)")
+    return OpenAIEmbeddings(
+        model=EMBEDDING_MODEL,
+        openai_api_key=OPENAI_API_KEY,
+    )
 
 
 # ── 미임베딩 청크 조회 ────────────────────────────────────────
@@ -62,6 +84,15 @@ def fetch_unembedded_chunks(conn) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def reset_vector_ids(conn) -> None:
+    """전체 청크의 vector_id를 NULL로 초기화 (전체 재적재 시 사용)"""
+    cur = conn.cursor()
+    cur.execute("UPDATE rag_documents SET vector_id = NULL")
+    conn.commit()
+    cur.close()
+    print("✅ rag_documents.vector_id 전체 초기화 완료")
 
 
 def update_vector_ids(conn, id_pairs: list[tuple]) -> None:
@@ -98,10 +129,26 @@ def embed_and_store(chunks: list[dict], vector_store: PGVector) -> list[tuple]:
 
 # ── 메인 실행 ─────────────────────────────────────────────────
 
-def run():
-    print("=== pgvector 임베딩 적재 시작 ===\n")
+def run(reset: bool = False) -> None:
+    print("=== pgvector 임베딩 적재 시작 (text-embedding-3-large) ===\n")
 
-    conn   = psycopg2.connect(**DB_CONFIG)
+    conn = psycopg2.connect(**DB_CONFIG)
+
+    # --reset 플래그: 컬렉션 삭제 후 vector_id 초기화
+    if reset:
+        print("⚠️  --reset 모드: 기존 컬렉션을 삭제하고 전체 재적재합니다.")
+        embeddings = build_embeddings()
+        vs_temp = PGVector(
+            collection_name=COLLECTION_NAME,
+            connection=CONNECTION_STRING,
+            embeddings=embeddings,
+            use_jsonb=True,
+            pre_delete_collection=True,   # 컬렉션 삭제
+        )
+        del vs_temp
+        reset_vector_ids(conn)
+        print()
+
     chunks = fetch_unembedded_chunks(conn)
 
     if not chunks:
@@ -109,12 +156,10 @@ def run():
         conn.close()
         return
 
-    print(f"📄 임베딩 대상 청크: {len(chunks)}개\n")
+    print(f"📄 임베딩 대상 청크: {len(chunks)}개")
+    print(f"   모델: {EMBEDDING_MODEL}  |  배치 크기: {BATCH_SIZE}  |  벡터 차원: 3072\n")
 
-    embeddings = OpenAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        openai_api_key=OPENAI_API_KEY,
-    )
+    embeddings = build_embeddings()
 
     vector_store = PGVector(
         collection_name=COLLECTION_NAME,
@@ -140,8 +185,15 @@ def run():
 
     conn.close()
     print(f"\n✅ 완료! {len(id_pairs)}개 청크 pgvector 적재")
-    print(f"   컬렉션: {COLLECTION_NAME}")
+    print(f"   컬렉션: {COLLECTION_NAME}  |  모델: {EMBEDDING_MODEL}")
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(description="pgvector 임베딩 적재 (text-embedding-3-large)")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="기존 컬렉션을 삭제하고 전체 재적재합니다. (모델 변경 시 반드시 사용)",
+    )
+    args = parser.parse_args()
+    run(reset=args.reset)
