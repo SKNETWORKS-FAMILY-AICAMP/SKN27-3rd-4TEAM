@@ -19,6 +19,7 @@ from utils.styles import GLOBAL_CSS
 from utils.components import emergency_widget
 import views.chat as chat
 import views.checklist as checklist
+import views.contract_upload as contract_upload
 import views.history as history
 import views.home as home
 import views.market as market
@@ -39,6 +40,7 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
 VIEWS = {
     "home": {"label": "메인페이지", "icon": "🏠", "badge": None, "render": home.render},
+    "contract_upload": {"label": "계약서 업로드", "icon": "📄", "badge": None, "render": contract_upload.render},
     "chat": {"label": "챗봇", "icon": "🤖", "badge": "12", "render": chat.render},
     "cases": {"label": "나와 비슷한 사례", "icon": "📚", "badge": None, "render": playbook.render_cases},
     "checklist": {"label": "체크리스트", "icon": "📋", "badge": None, "render": checklist.render},
