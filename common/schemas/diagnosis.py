@@ -19,6 +19,11 @@ class MarketAnalysis:
     median_sale_price: float | None = None
     estimated_jeonse_ratio: float | None = None
     deposit_percentile: float | None = None
+    predicted_jeonse_deposit_24m: float | None = None
+    predicted_sale_price_24m: float | None = None
+    predicted_jeonse_ratio_24m: float | None = None
+    forecast_confidence: Literal["LOW", "MEDIUM", "HIGH"] | None = None
+    forecast_source: str | None = None
     confidence: Literal["LOW", "MEDIUM", "HIGH"] = "LOW"
     notes: list[str] = field(default_factory=list)
 

@@ -7,6 +7,19 @@ from __future__ import annotations
 from neo4j import GraphDatabase, Driver
 from rag_server.config import Settings
 
+GRAPH_STOPWORDS = {
+    "전세",
+    "계약",
+    "위험",
+    "확인",
+    "이유",
+    "어떻게",
+    "무엇",
+    "하나요",
+    "있나요",
+    "알려줘",
+}
+
 
 class GraphStore:
     def __init__(self, settings: Settings):
@@ -45,6 +58,105 @@ class GraphStore:
         """
         with self._driver.session() as session:
             return [dict(r) for r in session.run(query, keywords=keywords)]
+
+    def get_context_by_question(self, question: str, limit: int = 5) -> list[dict]:
+        """Return normalized graph context for chat/RAG.
+
+        The public shape is intentionally generic so the rest of the RAG stack
+        is insulated from future Neo4j label/relationship changes.
+        """
+        keywords = _extract_graph_keywords(question)
+        if not keywords:
+            return []
+
+        try:
+            current = self._get_current_schema_context(keywords=keywords, limit=limit)
+            if current:
+                return current
+        except Exception:
+            pass
+
+        try:
+            return self._get_generic_schema_context(keywords=keywords, limit=limit)
+        except Exception:
+            return []
+
+    def _get_current_schema_context(self, keywords: list[str], limit: int) -> list[dict]:
+        query = """
+        UNWIND $keywords AS kw
+        MATCH (rf:RiskFactor)
+        WHERE rf.keywords CONTAINS kw OR rf.description CONTAINS kw OR rf.category CONTAINS kw
+        OPTIONAL MATCH (rf)-[:REGULATED_BY]->(law:Law)
+        OPTIONAL MATCH (rf)-[:EVIDENCED_BY]->(case:Case)
+        RETURN DISTINCT
+            rf.factor_id   AS source_id,
+            rf.category    AS title,
+            rf.description AS summary,
+            rf.severity    AS severity,
+            rf.advice      AS advice,
+            collect(DISTINCT law.name)  AS laws,
+            collect(DISTINCT case.name) AS cases,
+            labels(rf) AS labels
+        ORDER BY
+            CASE rf.severity WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return [
+                {
+                    "source_id": row["source_id"],
+                    "title": row["title"] or row["source_id"],
+                    "summary": row["summary"] or "",
+                    "severity": row["severity"],
+                    "advice": row["advice"],
+                    "laws": row["laws"] or [],
+                    "cases": row["cases"] or [],
+                    "labels": row["labels"] or [],
+                    "schema": "current_risk_factor",
+                }
+                for row in session.run(query, keywords=keywords, limit=limit)
+            ]
+
+    def _get_generic_schema_context(self, keywords: list[str], limit: int) -> list[dict]:
+        query = """
+        MATCH (n)
+        WHERE any(kw IN $keywords
+            WHERE any(k IN keys(n) WHERE toLower(toString(n[k])) CONTAINS toLower(kw)))
+        WITH n
+        LIMIT $limit
+        OPTIONAL MATCH (n)-[r]-(m)
+        RETURN
+            elementId(n) AS node_id,
+            labels(n) AS labels,
+            properties(n) AS props,
+            collect(DISTINCT {
+                relationship: type(r),
+                labels: labels(m),
+                properties: properties(m)
+            })[0..5] AS neighbors
+        """
+        with self._driver.session() as session:
+            contexts: list[dict] = []
+            for row in session.run(query, keywords=keywords, limit=limit):
+                props = dict(row["props"] or {})
+                title = _first_value(props, "name", "title", "category", "risk_type", "id") or row["node_id"]
+                summary = _first_value(props, "description", "summary", "content", "advice", "text") or ""
+                neighbors = [item for item in row["neighbors"] or [] if item.get("properties")]
+                contexts.append(
+                    {
+                        "source_id": row["node_id"],
+                        "title": str(title),
+                        "summary": str(summary),
+                        "severity": props.get("severity"),
+                        "advice": props.get("advice"),
+                        "laws": _neighbor_names(neighbors, {"Law", "LegalBasis", "Article"}),
+                        "cases": _neighbor_names(neighbors, {"Case", "Precedent", "Incident"}),
+                        "labels": row["labels"] or [],
+                        "neighbors": neighbors,
+                        "schema": "generic_property_search",
+                    }
+                )
+            return contexts
 
     def get_all_risk_factors(self) -> list[dict]:
         query = """
@@ -148,3 +260,60 @@ class GraphStore:
                         law=law, factor_id=rf["factor_id"],
                     )
         print(f"✅ Neo4j 시드 데이터 적재 완료: {len(risk_factors)}개 위험 요소")
+
+
+def _extract_graph_keywords(text: str) -> list[str]:
+    normalized = (
+        text.replace("?", " ")
+        .replace("!", " ")
+        .replace(",", " ")
+        .replace(".", " ")
+        .replace("/", " ")
+    )
+    keywords: list[str] = []
+    for token in normalized.split():
+        token = token.strip("()[]{}\"'")
+        if len(token) < 2 or token in GRAPH_STOPWORDS:
+            continue
+        keywords.append(token)
+    domain_terms = [
+        "신탁",
+        "신탁원부",
+        "대항력",
+        "우선변제",
+        "확정일자",
+        "전입신고",
+        "선순위",
+        "보증금",
+        "다가구",
+        "근저당",
+        "가압류",
+        "임차권등기",
+        "특약",
+        "전세가율",
+    ]
+    for term in domain_terms:
+        if term in text and term not in keywords:
+            keywords.append(term)
+    return keywords[:12]
+
+
+def _first_value(data: dict, *keys: str):
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _neighbor_names(neighbors: list[dict], target_labels: set[str]) -> list[str]:
+    names: list[str] = []
+    for item in neighbors:
+        labels = set(item.get("labels") or [])
+        if labels and not labels.intersection(target_labels):
+            continue
+        props = item.get("properties") or {}
+        value = _first_value(props, "name", "title", "article", "case_number", "id")
+        if value and str(value) not in names:
+            names.append(str(value))
+    return names

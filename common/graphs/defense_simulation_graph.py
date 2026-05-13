@@ -25,10 +25,10 @@ SCENARIO_PATH = Path(__file__).resolve().parents[2] / "data" / "defense_scenario
 NODE_SEQUENCE: list[tuple[str, Callable[[DefenseSimulationState], DefenseSimulationState]]] = [
     ("campaign_loader", campaign_loader_node),
     ("stage_loader", stage_loader_node),
-    ("roleplay", roleplay_node),
     ("input_router", input_router_node),
     ("command_handler", command_handler_node),
     ("user_action_interpreter", user_action_interpreter_node),
+    ("roleplay", roleplay_node),
     ("defense_judge", defense_judge_node),
     ("stage_result", stage_result_node),
     ("evidence_connector", evidence_connector_node),
@@ -59,6 +59,7 @@ def run_defense_simulation(
     risk_exposure: int = 0,
     failed_stage_count: int = 0,
     hint_used_count: int = 0,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> DefenseSimulationState:
     initial_state: DefenseSimulationState = {
         "session_id": session_id,
@@ -70,7 +71,7 @@ def run_defense_simulation(
         "hint_used_count": hint_used_count,
         "agent_trace": [],
         "errors": [],
-        "conversation_history": [],
+        "conversation_history": list(conversation_history or []),
         "game_status": "PLAYING",
     }
     try:
@@ -188,6 +189,7 @@ def run_interactive() -> DefenseSimulationState:
             risk_exposure=int(result.get("risk_exposure", 0)),
             failed_stage_count=int(result.get("failed_stage_count", 0)),
             hint_used_count=int(result.get("hint_used_count", 0)),
+            conversation_history=list(result.get("conversation_history", [])),
         )
 
         _print_turn_summary(result.get("report", result))

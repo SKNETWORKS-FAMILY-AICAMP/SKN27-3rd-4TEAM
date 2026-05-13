@@ -6,12 +6,11 @@ from pathlib import Path
 from typing import Any
 
 
-from common.agents.react_agent_factory import invoke_react_agent
+from common.agents.diagnosis_agents import analyze_special_clauses_with_llm, run_special_clause_react_agent
 from common.schemas.diagnosis import DiagnosisState
 from common.schemas.shared import AgentTrace, ContextPack, RiskFinding
-from common.tools.adaptive_rag import adaptive_rag, adaptive_rag_tool
+from common.tools.adaptive_rag import adaptive_rag
 from common.tools.document import extract_contract_fields, parse_contract_file
-from common.tools.llm import extract_json_object, ollama_generate
 from common.tools.market import analyze_market
 
 
@@ -45,17 +44,7 @@ def special_clause_analysis_node(state: DiagnosisState) -> DiagnosisState:
     terms = fields.get("special_terms") or []
     query = "\n".join(str(term) for term in terms) or state.get("contract_text", "")[:1500]
     context_pack = adaptive_rag("special_clause_analysis", query, filters={"doc_type": ["사례집", "법령", "판례", "서식"]}, top_k=5)
-    react_summary = invoke_react_agent(
-        name="special_clause_react_agent",
-        system_prompt=(
-            "너는 전세계약 특약 위험을 판단하는 LangGraph ReAct Agent다. "
-            "반드시 adaptive_rag_tool을 사용해 체크리스트/법령/사례 근거를 확인하고, "
-            "위험 특약, 빠진 방어 특약, 수정 권장 방향을 간단히 정리한다."
-        ),
-        user_prompt=f"계약서 특약을 분석해줘.\n특약:\n{query[:2500]}",
-        tools=[adaptive_rag_tool],
-        temperature=0.1,
-    )
+    react_summary = run_special_clause_react_agent(query)
 
     findings: list[RiskFinding] = []
     revisions: list[str] = []
@@ -88,47 +77,8 @@ def _analyze_special_clauses_with_llm(terms: list[Any], context_pack: ContextPac
         return {"findings": [], "missing_defensive": [], "revisions": [], "mode": "empty_terms"}
 
     context_text = _context_text(context_pack)
-    prompt = f"""
-다음 전세계약 특약을 RAG 근거에 기반해 분석하고 JSON 객체만 반환해.
-단순 키워드가 아니라 조항의 의미를 판단해.
-위험하지 않으면 findings는 빈 배열로 둬.
-점수는 HIGH=15, MEDIUM=10, LOW=5 범위에서 보수적으로 정해.
-
-반환 형식:
-{{
-        "findings": [
-            {{
-              "code": "CLAUSE_...",
-              "title": "짧은 제목",
-      "severity": "HIGH|MEDIUM|LOW",
-      "score_delta": 15,
-      "description": "왜 위험한지",
-      "evidence": ["문제 특약 원문"],
-      "required_action": "사용자가 요청할 조치"
-            }}
-          ],
-          "missing_defensive_clauses": [
-            {{
-              "code": "MISSING_...",
-              "title": "빠진 방어 특약 제목",
-              "severity": "HIGH|MEDIUM|LOW",
-              "score_delta": 10,
-              "description": "왜 필요한 방어 특약인지",
-              "required_action": "추가 또는 수정 요청할 문구"
-            }}
-          ],
-          "recommended_revisions": ["수정 권장 문구 또는 방향"]
-        }}
-
-특약:
-{chr(10).join(str(term) for term in terms)[:3000]}
-
-RAG 근거:
-{context_text[:5000]}
-""".strip()
     try:
-        raw = ollama_generate(prompt, system="너는 전세계약 특약 위험을 RAG 근거로 구조화하는 분석기다. JSON만 반환한다.", temperature=0.0)
-        data = extract_json_object(raw)
+        data = analyze_special_clauses_with_llm(terms, context_text)
         findings = [_finding_from_llm(item, terms) for item in data.get("findings", []) if isinstance(item, dict)]
         findings = [finding for finding in findings if finding is not None]
         missing = [_missing_from_llm(item) for item in data.get("missing_defensive_clauses", []) if isinstance(item, dict)]
@@ -299,6 +249,8 @@ def report_writer_node(state: DiagnosisState) -> DiagnosisState:
     report = {
         "title": "전세계약 위험 진단 리포트",
         "disclaimer": "본 결과는 법률 자문이 아니라 계약 전 위험 확인을 돕는 보조 정보입니다.",
+        "contract_file": state.get("contract_file"),
+        "contract_source": "uploaded_file" if state.get("contract_file") else "mock_contract",
         "risk_score": state.get("risk_score", 0),
         "risk_level": state.get("risk_level", "UNKNOWN"),
         "contract_fields": state.get("contract_fields", {}),
