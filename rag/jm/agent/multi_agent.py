@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import psycopg2
-import requests
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -157,32 +156,9 @@ def _generate_with_openai(query: str, db_result: DbAnalysisResult, rag_result: R
     )
 
 
-def _generate_with_ollama(query: str, db_result: DbAnalysisResult, rag_result: RagAgentResult) -> str:
-    """Ollama 로컬 모델로 DB 분석 + RAG 근거를 결합해 최종 답변을 생성합니다."""
-
-    cfg = load_config()
-    prompt = (
-        "너는 전세사기 위험을 설명하는 전문가 에이전트야.\n"
-        "DB 분석 결과와 RAG 문서 근거를 함께 사용해서 답해줘.\n\n"
-        f"[질문]\n{query}\n\n"
-        f"[DB 분석]\n{db_result.summary}\n{db_result.metrics}\n\n"
-        f"[RAG 근거]\n{rag_result.summary}\n{_format_hits(rag_result.hits)}"
-    )
-    response = requests.post(
-        f"{cfg.ollama_base_url.rstrip('/')}/api/generate",
-        json={"model": cfg.llm_model, "prompt": prompt, "stream": False},
-        timeout=120,
-    )
-    response.raise_for_status()
-    return response.json().get("response", "").strip()
-
-
 def risk_explanation_agent(query: str, db_result: DbAnalysisResult, rag_result: RagAgentResult) -> str:
-    """설정된 LLM 제공자에 따라 최종 답변 생성 함수를 선택해 실행합니다."""
+    """OpenAI 모델로 최종 답변 생성 에이전트를 실행합니다."""
 
-    cfg = load_config()
-    if cfg.llm_provider == "ollama":
-        return _generate_with_ollama(query, db_result, rag_result)
     return _generate_with_openai(query, db_result, rag_result)
 
 

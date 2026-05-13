@@ -58,12 +58,6 @@ def get_agent_graph():
     """Supervisor + ToolNode로 구성된 LangGraph를 생성합니다."""
 
     cfg = load_config()
-    if cfg.llm_provider != "openai":
-        raise ValueError(
-            "agent 모드는 현재 OpenAI tool-calling 모델만 지원합니다. "
-            "무료 실행은 generate + ollama 경로를 사용하세요."
-        )
-
     llm = ChatOpenAI(model=cfg.llm_model, temperature=0)
     tools = [search_documents]
 

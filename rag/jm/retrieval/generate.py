@@ -6,7 +6,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import requests
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -51,21 +50,6 @@ def _generate_with_openai(query: str, context: str) -> str:
     return chain.invoke({"context": context, "query": query})
 
 
-def _generate_with_ollama(query: str, context: str) -> str:
-    cfg = load_config()
-    response = requests.post(
-        f"{cfg.ollama_base_url.rstrip('/')}/api/generate",
-        json={
-            "model": cfg.llm_model,
-            "prompt": _build_prompt(query, context),
-            "stream": False,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    return response.json().get("response", "").strip()
-
-
 def generate_answer(
     query: str,
     k: int = 5,
@@ -73,11 +57,6 @@ def generate_answer(
 ) -> GenerateResult:
     hits = search(query=query, k=k, where=where)
     context = _build_context(hits)
-    cfg = load_config()
-
-    if cfg.llm_provider == "ollama":
-        answer = _generate_with_ollama(query, context)
-    else:
-        answer = _generate_with_openai(query, context)
+    answer = _generate_with_openai(query, context)
 
     return GenerateResult(answer=answer, hits=hits)
