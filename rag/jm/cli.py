@@ -1,62 +1,51 @@
+# rag/jm/cli.py
+# RAG 문서 적재, 검색, 답변 생성, 에이전트 실행을 위한 CLI입니다.
+
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import List, Optional
 
 from dotenv import load_dotenv
 
+from .agent.supervisor import run_agent
 from .retrieval.generate import generate_answer
 from .retrieval.ingest import ingest_paths
 from .retrieval.search import search
-from .agent.supervisor import run_agent
 
-# 문서 적재
+
 def _cmd_ingest(args: argparse.Namespace) -> int:
-    res = ingest_paths(
-        paths=args.path, 
-        glob_pattern=args.glob, 
+    result = ingest_paths(
+        paths=args.path,
+        glob_pattern=args.glob,
         doc_type=args.doc_type,
-        clear=args.clear
+        clear=args.clear,
     )
-    print(json.dumps({"files": res.files, "chunks": res.chunks}, ensure_ascii=False))
+    print(json.dumps({"files": result.files, "chunks": result.chunks}, ensure_ascii=False))
     return 0
 
-# 검색
+
 def _cmd_search(args: argparse.Namespace) -> int:
     where = json.loads(args.where) if args.where else None
     hits = search(query=args.query, k=args.k, where=where)
-    payload = [
-        {
-            "score": h.score,
-            "metadata": h.metadata,
-            "content": h.content,
-        }
-        for h in hits
-    ]
-    print(json.dumps(payload, ensure_ascii=False))
+    payload = [{"score": h.score, "metadata": h.metadata, "content": h.content} for h in hits]
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
-# 최종 답변 생성
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     where = json.loads(args.where) if args.where else None
     result = generate_answer(query=args.query, k=args.k, where=where)
-    
     payload = {
         "answer": result.answer,
-        "hits": [
-            {
-                "score": h.score,
-                "metadata": h.metadata,
-                "content": h.content,
-            }
-            for h in result.hits
-        ]
+        "hits": [{"score": h.score, "metadata": h.metadata, "content": h.content} for h in result.hits],
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
-# 에이전트 실행
+
 def _cmd_agent(args: argparse.Namespace) -> int:
     answer = run_agent(query=args.query)
     print(json.dumps({"answer": answer}, ensure_ascii=False, indent=2))
@@ -65,48 +54,36 @@ def _cmd_agent(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     load_dotenv()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
-    p = argparse.ArgumentParser(prog="rag.jm")
-    sub = p.add_subparsers(dest="cmd", required=True)
-     
-    # 문서 적재 옵션 설명
-    # --path: 문서가 있는 경로
-    # --glob: glob 패턴
-    # --doc-type: 문서 유형
-    # --clear: 기존 데이터 삭제
-    pi = sub.add_parser("ingest", help="Ingest documents into PGVector")
-    pi.add_argument("--path", action="append", required=True, help="File or directory path (repeatable)")
-    pi.add_argument("--glob", default=None, help='Glob pattern when path is a directory, e.g. "*.pdf"')
-    pi.add_argument("--doc-type", default="doc", help="Metadata: doc_type")
-    pi.add_argument("--clear", action="store_true", help="Clear existing data before ingestion")
-    pi.set_defaults(func=_cmd_ingest)
+    parser = argparse.ArgumentParser(prog="rag.jm")
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
 
-    # 검색 옵션
-    # --query: 검색어
-    # --k: 검색 결과 수
-    # --where: 메타데이터 필터
-    ps = sub.add_parser("search", help="Search similar chunks from PGVector")
-    ps.add_argument("--query", required=True)
-    ps.add_argument("--k", type=int, default=5)
-    ps.add_argument("--where", default=None, help='JSON filter for metadata, e.g. {"doc_type":"law"}')
-    ps.set_defaults(func=_cmd_search)
+    ingest_parser = subparsers.add_parser("ingest", help="문서를 PGVector에 적재")
+    ingest_parser.add_argument("--path", action="append", required=True, help="파일 또는 디렉터리 경로")
+    ingest_parser.add_argument("--glob", default=None, help='디렉터리 검색 패턴 예: "*.pdf"')
+    ingest_parser.add_argument("--doc-type", default="doc", help="문서 유형 메타데이터")
+    ingest_parser.add_argument("--clear", action="store_true", help="기존 컬렉션을 삭제 후 적재")
+    ingest_parser.set_defaults(func=_cmd_ingest)
 
-    # 답변 생성 옵션
-    # --query: 검색어
-    # --k: 검색 결과 수
-    # --where: 메타데이터 필터
-    pg = sub.add_parser("generate", help="Generate answer using LLM based on searched chunks")
-    pg.add_argument("--query", required=True)
-    pg.add_argument("--k", type=int, default=5)
-    pg.add_argument("--where", default=None, help='JSON filter for metadata, e.g. {"doc_type":"law"}')
-    pg.set_defaults(func=_cmd_generate)
+    search_parser = subparsers.add_parser("search", help="유사 문서 chunk 검색")
+    search_parser.add_argument("--query", required=True)
+    search_parser.add_argument("--k", type=int, default=5)
+    search_parser.add_argument("--where", default=None, help='메타데이터 JSON 필터 예: {"doc_type":"law"}')
+    search_parser.set_defaults(func=_cmd_search)
 
-    # 에이전트 옵션
-    pa = sub.add_parser("agent", help="Run the Supervisor agent")
-    pa.add_argument("--query", required=True)
-    pa.set_defaults(func=_cmd_agent)
+    generate_parser = subparsers.add_parser("generate", help="검색 결과 기반 답변 생성")
+    generate_parser.add_argument("--query", required=True)
+    generate_parser.add_argument("--k", type=int, default=5)
+    generate_parser.add_argument("--where", default=None, help='메타데이터 JSON 필터 예: {"doc_type":"law"}')
+    generate_parser.set_defaults(func=_cmd_generate)
 
-    args = p.parse_args(argv)
+    agent_parser = subparsers.add_parser("agent", help="Supervisor 에이전트 실행")
+    agent_parser.add_argument("--query", required=True)
+    agent_parser.set_defaults(func=_cmd_agent)
+
+    args = parser.parse_args(argv)
     return int(args.func(args))
 
 
