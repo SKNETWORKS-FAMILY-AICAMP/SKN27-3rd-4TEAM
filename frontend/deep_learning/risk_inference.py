@@ -2,10 +2,10 @@
 
 import argparse
 import json
+from pathlib import Path
 
 import pandas as pd
 
-from lstm_model import LOOKBACK, MODEL_DIR, forecast, train as train_lstm
 from preprocess import (
     PROCESSED_DIR,
     area_bucket,
@@ -16,6 +16,9 @@ from preprocess import (
     normalize_sale,
     read_db,
 )
+
+LOOKBACK = 12
+MODEL_DIR = Path(__file__).resolve().parent / "artifacts" / "models"
 
 
 def _safe_float(value):
@@ -169,12 +172,19 @@ def analyze(args):
     jeonse_ratio = round(input_per_pyeong / sale_per_pyeong * 100, 2) if sale_per_pyeong else None
 
     forecast_result = None
+    forecast_error = None
     if len(group_series) >= LOOKBACK + 6:
-        metadata = train_lstm(PROCESSED_DIR / "jeonse_monthly.csv", MODEL_DIR)
-        key_data = {"sido": args.sido, "sigungu": args.sigungu, "dong_name": args.dong, "housing_type": args.housing_type, "area_bucket": bucket}
-        model_key = "_".join(str(key_data[k]).replace(" ", "") for k in ["sido", "sigungu", "dong_name", "housing_type", "area_bucket"])
-        if model_key in metadata.get("trained_models", {}):
-            forecast_result = forecast(key_data, group_series["median_deposit_per_pyeong"].astype(float).tolist())
+        try:
+            # LSTM 의존성이 설치된 환경에서만 24개월 예측을 수행합니다.
+            from lstm_model import forecast, train as train_lstm
+
+            metadata = train_lstm(PROCESSED_DIR / "jeonse_monthly.csv", MODEL_DIR)
+            key_data = {"sido": args.sido, "sigungu": args.sigungu, "dong_name": args.dong, "housing_type": args.housing_type, "area_bucket": bucket}
+            model_key = "_".join(str(key_data[k]).replace(" ", "") for k in ["sido", "sigungu", "dong_name", "housing_type", "area_bucket"])
+            if model_key in metadata.get("trained_models", {}):
+                forecast_result = forecast(key_data, group_series["median_deposit_per_pyeong"].astype(float).tolist())
+        except ImportError as exc:
+            forecast_error = f"LSTM 예측 의존성 미설치: {exc}"
 
     forecast_change_pct = forecast_result["change_rate"] if forecast_result else None
     score, level, reasons, advice = _score_risk(gap_pct, jeonse_ratio, forecast_change_pct, building_ref["building_gap_pct"])
@@ -206,6 +216,7 @@ def analyze(args):
             "sale_per_pyeong": sale_per_pyeong,
             "jeonse_ratio": jeonse_ratio,
             "forecast_24m": forecast_result,
+            "forecast_error": forecast_error,
             "market_phase": _market_phase(forecast_change_pct),
         },
         "risk": {"risk_level": level, "risk_score": score, "reasons": reasons, "advice": advice},

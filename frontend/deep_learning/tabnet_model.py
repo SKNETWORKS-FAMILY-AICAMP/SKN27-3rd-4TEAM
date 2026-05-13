@@ -20,11 +20,14 @@ FEATURES = [
     "floor",
     "building_age",
     "deposit_per_pyeong",
-    "z_score",
-    "jeonse_ratio",
-    "q25",
-    "q75",
+    "region_price",
+    "sale_price",
+    "region_count",
+    "sale_count",
+    "is_sale_price_available",
 ]
+# 모델 학습 누수를 줄이기 위해 정답 라벨 계산에 직접 쓰인 파생 변수는 제외합니다.
+LEAKED_FEATURES = ["z_score", "jeonse_ratio", "q25", "q75"]
 
 
 def prepare_features(df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
@@ -36,14 +39,15 @@ def prepare_features(df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         path = MODEL_DIR / f"{col}_label_encoder.pkl"
         if fit:
             encoder = LabelEncoder()
-            out[target] = encoder.fit_transform(out[col].fillna("미상").astype(str))
+            out[target] = encoder.fit_transform(out[col].fillna("unknown").astype(str))
             joblib.dump(encoder, path)
         else:
             encoder = joblib.load(path)
-            values = out[col].fillna("미상").astype(str)
+            values = out[col].fillna("unknown").astype(str)
             known = set(encoder.classes_)
             out[target] = [int(encoder.transform([v])[0]) if v in known else 0 for v in values]
-    out["building_age"] = 2026 - pd.to_numeric(out.get("build_year", 2000), errors="coerce").fillna(2000)
+    out["building_age"] = pd.Timestamp.today().year - pd.to_numeric(out.get("build_year", 2000), errors="coerce").fillna(2000)
+    out["is_sale_price_available"] = pd.to_numeric(out.get("sale_price", np.nan), errors="coerce").notna().astype(int)
     for col in FEATURES:
         out[col] = pd.to_numeric(out.get(col, 0), errors="coerce").fillna(0)
     return out
@@ -52,22 +56,39 @@ def prepare_features(df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
 def train(input_path: Path = PROCESSED_DIR / "jeonse_labeled.csv", output_dir: Path = MODEL_DIR) -> dict:
     try:
         from pytorch_tabnet.tab_model import TabNetClassifier
-        from sklearn.metrics import classification_report, roc_auc_score
+        from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
         from sklearn.model_selection import train_test_split
     except ImportError as exc:
-        raise ImportError("TabNet 학습에는 pytorch-tabnet과 scikit-learn이 필요합니다.") from exc
+        raise ImportError("TabNet training requires pytorch-tabnet and scikit-learn.") from exc
 
     output_dir.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(input_path, encoding="utf-8-sig")
     df = prepare_features(df, fit=True).dropna(subset=FEATURES + ["is_anomaly"])
     if len(df) < 30:
-        raise ValueError("TabNet 학습에는 최소 30건 이상의 라벨 데이터가 필요합니다.")
+        raise ValueError("TabNet training requires at least 30 labeled rows.")
     x = df[FEATURES].to_numpy(dtype=np.float32)
     y = df["is_anomaly"].astype(int).to_numpy()
     if len(np.unique(y)) < 2:
-        raise ValueError("정상/이상 라벨이 한 종류뿐이라 분류 모델을 학습할 수 없습니다.")
+        raise ValueError("Both normal and anomaly labels are required for classification training.")
 
-    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42, stratify=y)
+    split_strategy = "random_stratified"
+    if "contract_month" in df.columns:
+        months = np.asarray(sorted(df["contract_month"].dropna().unique()))
+        if len(months) >= 5:
+            cutoff = months[max(1, int(len(months) * 0.8))]
+            train_mask = (df["contract_month"] < cutoff).to_numpy()
+            test_mask = (df["contract_month"] >= cutoff).to_numpy()
+            if train_mask.any() and test_mask.any() and len(np.unique(y[train_mask])) == 2 and len(np.unique(y[test_mask])) == 2:
+                x_train, x_test = x[train_mask], x[test_mask]
+                y_train, y_test = y[train_mask], y[test_mask]
+                split_strategy = "time_holdout_latest_20pct_months"
+            else:
+                x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42, stratify=y)
+        else:
+            x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42, stratify=y)
+    else:
+        x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42, stratify=y)
+
     model = TabNetClassifier(seed=42, n_d=32, n_a=32, n_steps=5, gamma=1.5, verbose=0)
     model.fit(
         x_train,
@@ -86,8 +107,12 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_labeled.csv", output_dir: P
         "model": "TabNetClassifier",
         "rows": int(len(df)),
         "anomaly_rate": round(float(y.mean()), 4),
+        "split_strategy": split_strategy,
+        "features": FEATURES,
+        "excluded_leaked_features": LEAKED_FEATURES,
         "auc": round(float(roc_auc_score(y_test, prob)), 4),
         "classification_report": classification_report(y_test, pred, output_dict=True, zero_division=0),
+        "confusion_matrix": confusion_matrix(y_test, pred).tolist(),
         "feature_importances": {
             feature: round(float(value), 6)
             for feature, value in zip(FEATURES, model.feature_importances_, strict=False)
@@ -121,3 +146,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

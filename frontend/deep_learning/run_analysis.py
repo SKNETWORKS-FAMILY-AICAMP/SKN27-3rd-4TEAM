@@ -17,14 +17,22 @@ def main() -> None:
     result = {"preprocess": run_preprocess(source=args.source)}
 
     if not args.skip_tabnet:
-        from tabnet_model import train as train_tabnet
+        try:
+            # TabNet 의존성이 없는 로컬 환경에서도 전처리/RAG 검증이 끊기지 않게 결과에 오류를 남깁니다.
+            from tabnet_model import train as train_tabnet
 
-        result["tabnet"] = train_tabnet(PROCESSED_DIR / "jeonse_labeled.csv")
+            result["tabnet"] = train_tabnet(PROCESSED_DIR / "jeonse_labeled.csv")
+        except (ImportError, ValueError) as exc:
+            result["tabnet"] = {"status": "skipped", "reason": str(exc)}
 
     if not args.skip_lstm:
-        from lstm_model import train as train_lstm
+        try:
+            # LSTM 의존성이 없는 로컬 환경에서도 분석 요약 파일은 생성되도록 처리합니다.
+            from lstm_model import train as train_lstm
 
-        result["lstm"] = train_lstm(PROCESSED_DIR / "jeonse_monthly.csv")
+            result["lstm"] = train_lstm(PROCESSED_DIR / "jeonse_monthly.csv")
+        except (ImportError, ValueError) as exc:
+            result["lstm"] = {"status": "skipped", "reason": str(exc)}
 
     output_path = Path(__file__).resolve().parent / "artifacts" / "analysis_summary.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
