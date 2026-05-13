@@ -67,22 +67,27 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: P
         key = _model_key(key_data)
         values = group["median_deposit_per_pyeong"].astype(float).interpolate().ffill().bfill().to_numpy().reshape(-1, 1)
         if len(values) < MIN_MONTHS:
-            skipped[key] = f"{len(values)}개월: 최소 {MIN_MONTHS}개월 필요"
+            skipped[key] = f"{len(values)} months: at least {MIN_MONTHS} months required"
             continue
 
+        x_raw, y_raw = make_sequences(values.flatten())
+        split = max(1, int(len(x_raw) * 0.8))
         scaler = MinMaxScaler()
-        scaled = scaler.fit_transform(values).flatten()
-        x, y = make_sequences(scaled)
-        split = max(1, int(len(x) * 0.8))
-        x_train = torch.FloatTensor(x[:split]).unsqueeze(-1)
-        y_train = torch.FloatTensor(y[:split]).unsqueeze(-1)
-        x_test = torch.FloatTensor(x[split:]).unsqueeze(-1)
-        y_test = torch.FloatTensor(y[split:]).unsqueeze(-1)
+        scaler.fit(values[: LOOKBACK + split])
+
+        x_scaled = scaler.transform(x_raw.reshape(-1, 1)).reshape(x_raw.shape)
+        y_scaled = scaler.transform(y_raw.reshape(-1, 1)).flatten()
+        x_train = torch.FloatTensor(x_scaled[:split]).unsqueeze(-1)
+        y_train = torch.FloatTensor(y_scaled[:split]).unsqueeze(-1)
+        x_test = torch.FloatTensor(x_scaled[split:]).unsqueeze(-1)
+        y_test = torch.FloatTensor(y_scaled[split:]).unsqueeze(-1)
         loader = DataLoader(TensorDataset(x_train, y_train), batch_size=16, shuffle=True)
+        torch.manual_seed(42)
         model = build_model()
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         criterion = nn.MSELoss()
-        best_state, best_loss, patience = model.state_dict(), float("inf"), 0
+        best_state, best_valid_loss, patience = model.state_dict(), float("inf"), 0
+        last_train_loss = 0.0
 
         for _ in range(120):
             model.train()
@@ -94,9 +99,12 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: P
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 epoch_loss += float(loss.item())
-            avg_loss = epoch_loss / max(len(loader), 1)
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            last_train_loss = epoch_loss / max(len(loader), 1)
+            model.eval()
+            with torch.no_grad():
+                valid_loss = float(criterion(model(x_test), y_test).item()) if len(x_test) else last_train_loss
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
                 best_state = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
                 patience = 0
             else:
@@ -109,14 +117,28 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: P
         with torch.no_grad():
             if len(x_test):
                 pred = scaler.inverse_transform(model(x_test).numpy()).flatten()
-                actual = scaler.inverse_transform(y_test.numpy()).flatten()
+                actual = y_raw[split:]
+                naive = x_raw[split:, -1]
                 mae = float(mean_absolute_error(actual, pred))
                 rmse = float(np.sqrt(mean_squared_error(actual, pred)))
+                naive_mae = float(mean_absolute_error(actual, naive))
+                naive_rmse = float(np.sqrt(mean_squared_error(actual, naive)))
             else:
-                mae = rmse = 0.0
+                mae = rmse = naive_mae = naive_rmse = 0.0
         torch.save(best_state, output_dir / f"lstm_{key}.pt")
         joblib.dump(scaler, output_dir / f"lstm_scaler_{key}.pkl")
-        results[key] = {"mae": round(mae, 2), "rmse": round(rmse, 2), "months": int(len(values)), **key_data}
+        results[key] = {
+            "mae": round(mae, 2),
+            "rmse": round(rmse, 2),
+            "naive_mae": round(naive_mae, 2),
+            "naive_rmse": round(naive_rmse, 2),
+            "beats_naive": bool(rmse < naive_rmse) if naive_rmse else None,
+            "best_valid_loss": round(float(best_valid_loss), 6),
+            "last_train_loss": round(float(last_train_loss), 6),
+            "months": int(len(values)),
+            **key_data,
+        }
+
 
     summary = {"trained_models": results, "skipped": skipped}
     (output_dir / "lstm_metadata.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

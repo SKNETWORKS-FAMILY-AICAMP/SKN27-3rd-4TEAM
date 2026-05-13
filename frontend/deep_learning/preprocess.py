@@ -217,24 +217,77 @@ def building_monthly_stats(jeonse: pd.DataFrame) -> pd.DataFrame:
 def label_anomalies(jeonse: pd.DataFrame, jeonse_monthly: pd.DataFrame, sale_monthly: pd.DataFrame) -> pd.DataFrame:
     if jeonse.empty or jeonse_monthly.empty:
         return pd.DataFrame()
+    derived_cols = [
+        "region_price",
+        "region_count",
+        "region_price_loo",
+        "region_std_loo",
+        "region_reliability",
+        "sale_price",
+        "sale_count",
+        "sale_price_source",
+        "z_score",
+        "jeonse_ratio",
+        "is_price_anomaly",
+        "is_ratio_anomaly",
+        "is_anomaly",
+    ]
+    jeonse = jeonse.drop(columns=[col for col in derived_cols if col in jeonse.columns])
     stats = jeonse_monthly.rename(columns={"median_deposit_per_pyeong": "region_price"})
     labeled = jeonse.merge(
-        stats[["sido", "sigungu", "dong_name", "housing_type", "area_bucket", "contract_month", "region_price", "std", "q25", "q75"]],
+        stats[["sido", "sigungu", "dong_name", "housing_type", "area_bucket", "contract_month", "region_price", "std", "q25", "q75", "count"]],
         on=["sido", "sigungu", "dong_name", "housing_type", "area_bucket", "contract_month"],
         how="left",
-    )
+    ).rename(columns={"count": "region_count"})
     if not sale_monthly.empty:
         sale_ref = sale_monthly.rename(columns={"median_sale_per_pyeong": "sale_price"})
         labeled = labeled.merge(
-            sale_ref[["sido", "sigungu", "housing_type", "area_bucket", "contract_month", "sale_price"]],
+            sale_ref[["sido", "sigungu", "housing_type", "area_bucket", "contract_month", "sale_price", "count"]],
             on=["sido", "sigungu", "housing_type", "area_bucket", "contract_month"],
             how="left",
-        )
+        ).rename(columns={"count": "sale_count"})
+        labeled["sale_price_source"] = np.where(labeled["sale_price"].notna(), "same_month", "missing")
+
+        fallback = sale_ref[["sido", "sigungu", "housing_type", "area_bucket", "contract_month", "sale_price", "count"]].copy()
+        fallback = fallback.rename(columns={"sale_price": "sale_price_fallback", "count": "sale_count_fallback"})
+        fallback["contract_month_dt"] = pd.to_datetime(fallback["contract_month"], errors="coerce")
+        fallback = fallback.dropna(subset=["contract_month_dt", "sale_price_fallback"]).sort_values("contract_month_dt")
+        base = labeled.reset_index().copy()
+        base["contract_month_dt"] = pd.to_datetime(base["contract_month"], errors="coerce")
+        base = base.sort_values("contract_month_dt")
+        filled = pd.merge_asof(
+            base,
+            fallback,
+            by=["sido", "sigungu", "housing_type", "area_bucket"],
+            on="contract_month_dt",
+            direction="backward",
+            suffixes=("", "_fallback"),
+        ).set_index("index")
+        missing_sale = labeled["sale_price"].isna()
+        missing_index = missing_sale[missing_sale].index
+        labeled.loc[missing_index, "sale_price"] = filled.loc[missing_index, "sale_price_fallback"]
+        labeled.loc[missing_index, "sale_count"] = filled.loc[missing_index, "sale_count_fallback"]
+        labeled.loc[missing_sale & labeled["sale_price"].notna(), "sale_price_source"] = "prior_month"
     else:
         labeled["sale_price"] = np.nan
-    labeled["z_score"] = ((labeled["deposit_per_pyeong"] - labeled["region_price"]) / labeled["std"].replace(0, np.nan)).fillna(0)
+        labeled["sale_count"] = 0
+        labeled["sale_price_source"] = "missing"
+
+    group_cols = ["sido", "sigungu", "dong_name", "housing_type", "area_bucket", "contract_month"]
+    grouped = labeled.groupby(group_cols, dropna=False)["deposit_per_pyeong"]
+    count = grouped.transform("count")
+    total = grouped.transform("sum")
+    total_sq = grouped.transform(lambda values: np.square(values).sum())
+    loo_count = count - 1
+    loo_mean = (total - labeled["deposit_per_pyeong"]) / loo_count.replace(0, np.nan)
+    loo_var_num = (total_sq - np.square(labeled["deposit_per_pyeong"])) - loo_count * np.square(loo_mean)
+    loo_variance = loo_var_num / (loo_count - 1).replace(0, np.nan)
+    labeled["region_price_loo"] = loo_mean
+    labeled["region_std_loo"] = np.sqrt(loo_variance.clip(lower=0))
+    labeled["region_reliability"] = np.where(labeled["region_count"].fillna(0) >= 3, "normal", "low_sample")
+    labeled["z_score"] = ((labeled["deposit_per_pyeong"] - labeled["region_price_loo"]) / labeled["region_std_loo"].replace(0, np.nan)).fillna(0)
     labeled["jeonse_ratio"] = labeled["deposit_per_pyeong"] / labeled["sale_price"].replace(0, np.nan) * 100
-    labeled["is_price_anomaly"] = (labeled["z_score"].abs() >= 2).astype(int)
+    labeled["is_price_anomaly"] = ((labeled["region_count"].fillna(0) >= 3) & (labeled["z_score"].abs() >= 2)).astype(int)
     labeled["is_ratio_anomaly"] = ((labeled["jeonse_ratio"] >= 90) | (labeled["jeonse_ratio"] <= 30)).fillna(False).astype(int)
     labeled["is_anomaly"] = ((labeled["is_price_anomaly"] == 1) | (labeled["is_ratio_anomaly"] == 1)).astype(int)
     return labeled
