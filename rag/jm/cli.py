@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
+from .agent.multi_agent import run_multi_agent
 from .agent.supervisor import run_agent
 from .retrieval.generate import generate_answer
 from .retrieval.ingest import ingest_paths
@@ -52,6 +53,26 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_multi_agent(args: argparse.Namespace) -> int:
+    result = run_multi_agent(query=args.query, k=args.k)
+    payload = {
+        "answer": result.answer,
+        "db_analysis": {
+            "summary": result.db_analysis.summary,
+            "metrics": result.db_analysis.metrics,
+        },
+        "rag_analysis": {
+            "summary": result.rag_analysis.summary,
+            "hits": [
+                {"score": h.score, "metadata": h.metadata, "content": h.content}
+                for h in result.rag_analysis.hits
+            ],
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     load_dotenv()
     if hasattr(sys.stdout, "reconfigure"):
@@ -82,6 +103,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     agent_parser = subparsers.add_parser("agent", help="Supervisor 에이전트 실행")
     agent_parser.add_argument("--query", required=True)
     agent_parser.set_defaults(func=_cmd_agent)
+
+    multi_agent_parser = subparsers.add_parser("multi-agent", help="DB/RAG/설명 에이전트 순차 실행")
+    multi_agent_parser.add_argument("--query", required=True)
+    multi_agent_parser.add_argument("--k", type=int, default=5)
+    multi_agent_parser.set_defaults(func=_cmd_multi_agent)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

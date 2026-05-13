@@ -39,6 +39,11 @@ OpenAI 답변 생성:
 python -m rag.jm.cli generate --query "전세사기 예방 체크리스트 알려줘" --k 5
 ```
 
+멀티에이전트 실행:
+```powershell
+python -m rag.jm.cli multi-agent --query "전세보증금 반환 보증 가입 전에 무엇을 확인해야 해?" --k 3
+```
+
 Ollama 무료 답변 생성:
 ```powershell
 $env:RAG_LLM_PROVIDER="ollama"
