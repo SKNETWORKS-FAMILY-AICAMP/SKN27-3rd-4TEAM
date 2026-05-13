@@ -1,17 +1,29 @@
-"""전세계약 위험 진단 에이전트 - OpenAI LLM 클라이언트"""
+"""전세계약 위험 진단 에이전트 - Groq LLM 클라이언트
+chat LLM: Groq (llama-3.3-70b-versatile 등)
+embedding: OpenAI text-embedding-3-large (변경 없음)
+"""
 
 from __future__ import annotations
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from rag_server.config import Settings
 
 
 def get_llm(settings: Settings, streaming: bool = False) -> ChatOpenAI:
+    """Groq chat LLM 반환 (ChatOpenAI compatible API 사용)."""
+    if not settings.GROQ_API_KEY:
+        raise RuntimeError(
+            "GROQ_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
     return ChatOpenAI(
-        model=settings.OPENAI_MODEL,
-        temperature=settings.OPENAI_TEMPERATURE,
-        openai_api_key=settings.OPENAI_API_KEY,
+        model=settings.GROQ_MODEL,
+        api_key=settings.GROQ_API_KEY,
+        base_url=settings.GROQ_BASE_URL,
+        temperature=settings.GROQ_TEMPERATURE,
         streaming=streaming,
+        # Groq은 max_tokens 명시 권장
+        max_tokens=4096,
     )
 
 

@@ -26,10 +26,18 @@ class RagReference(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GraphContextItem(BaseModel):
+    """Neo4j 그래프 컨텍스트 항목 — [{node, relation, target}] 형식"""
+    node: str
+    relation: str
+    target: str
+
+
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
     references: list[RagReference] = Field(default_factory=list)
+    graph_context: list[GraphContextItem] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -67,6 +75,7 @@ class DiagnosisResponse(BaseModel):
     risk_factors: list[RiskFactor]
     summary: str
     references: list[RagReference] = Field(default_factory=list)
+    graph_context: list[GraphContextItem] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

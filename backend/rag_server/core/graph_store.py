@@ -1,10 +1,12 @@
 """
-전세계약 위험 진단 에이전트 - Neo4j 그래프 스토어
-(backend/app/core/graph_store.py 와 동일 로직, 임포트 경로만 수정)
+전세계약 위험 진단 에이전트 - Neo4j 그래프 스토어 v2
+LangGraph 설계서 기반 8종 노드·15+종 관계 쿼리 메서드 포함
 """
 
 from __future__ import annotations
-from neo4j import GraphDatabase, Driver
+
+from neo4j import Driver, GraphDatabase
+
 from rag_server.config import Settings
 
 
@@ -25,13 +27,19 @@ class GraphStore:
         except Exception:
             return False
 
+    # ─────────────────────────────────────────────────────────
+    # 기존 호환 메서드
+    # ─────────────────────────────────────────────────────────
+
     def get_risk_factors_by_keywords(self, keywords: list[str]) -> list[dict]:
+        """키워드로 RiskFactor 검색 (기존 호환)"""
         query = """
         UNWIND $keywords AS kw
         MATCH (rf:RiskFactor)
         WHERE rf.keywords CONTAINS kw OR rf.description CONTAINS kw
         OPTIONAL MATCH (rf)-[:REGULATED_BY]->(law:Law)
-        OPTIONAL MATCH (rf)-[:EVIDENCED_BY]->(case:Case)
+        OPTIONAL MATCH (rf)-[:EVIDENCED_BY]->(c:Case)
+        OPTIONAL MATCH (rf)-[:RELATED_TO]->(lc:LegalConcept)
         RETURN DISTINCT
             rf.factor_id   AS factor_id,
             rf.category    AS category,
@@ -39,7 +47,8 @@ class GraphStore:
             rf.severity    AS severity,
             rf.advice      AS advice,
             collect(DISTINCT law.name)  AS laws,
-            collect(DISTINCT case.name) AS cases
+            collect(DISTINCT c.name)    AS cases,
+            collect(DISTINCT lc.name)   AS legal_concepts
         ORDER BY
             CASE rf.severity WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END
         """
@@ -47,104 +56,255 @@ class GraphStore:
             return [dict(r) for r in session.run(query, keywords=keywords)]
 
     def get_all_risk_factors(self) -> list[dict]:
+        """모든 RiskFactor 조회"""
         query = """
         MATCH (rf:RiskFactor)
         OPTIONAL MATCH (rf)-[:REGULATED_BY]->(law:Law)
+        OPTIONAL MATCH (rf)-[:RELATED_TO]->(lc:LegalConcept)
         RETURN rf.factor_id AS factor_id, rf.category AS category,
                rf.description AS description, rf.severity AS severity,
                rf.keywords AS keywords, rf.advice AS advice,
-               collect(DISTINCT law.name) AS laws
+               collect(DISTINCT law.name) AS laws,
+               collect(DISTINCT lc.name)  AS legal_concepts
         ORDER BY rf.factor_id
         """
         with self._driver.session() as session:
             return [dict(r) for r in session.run(query)]
 
+    # ─────────────────────────────────────────────────────────
+    # v2 에이전트별 컨텍스트 메서드
+    # ─────────────────────────────────────────────────────────
+
+    def get_context_for_agent(
+        self,
+        agent_name: str,
+        keywords: list[str] | None = None,
+    ) -> list[dict]:
+        """
+        에이전트 이름으로 관련 RiskFactor·LegalConcept·Law·Procedure 컨텍스트 조회.
+
+        반환 형식:
+        [{"node": "대항력", "relation": "requires", "target": "전입신고"}, ...]
+        """
+        query = """
+        MATCH (a:AgentScope {name: $agent_name})-[:DETECTED_BY]->(rf:RiskFactor)
+        OPTIONAL MATCH (rf)-[:REGULATED_BY]->(law:Law)
+        OPTIONAL MATCH (rf)-[:RELATED_TO]->(lc:LegalConcept)
+        WITH rf, collect(DISTINCT law.name) AS laws, collect(DISTINCT lc.name) AS concepts
+        RETURN
+            rf.factor_id   AS node,
+            'detected_by'  AS relation,
+            rf.description AS target,
+            rf.severity    AS severity,
+            rf.advice      AS advice,
+            laws,
+            concepts
+        ORDER BY
+            CASE rf.severity WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END
+        """
+        with self._driver.session() as session:
+            rows = [dict(r) for r in session.run(query, agent_name=agent_name)]
+
+        # 키워드 필터 (옵션)
+        if keywords:
+            rows = [
+                r for r in rows
+                if any(kw in (r.get("target") or "") for kw in keywords)
+            ]
+        return rows
+
+    def get_legal_concepts(self, keywords: list[str]) -> list[dict]:
+        """
+        키워드로 LegalConcept 및 연결된 요소 조회.
+
+        반환 형식:
+        [{"node": "대항력", "relation": "requires", "target": "전입신고"}, ...]
+        """
+        query = """
+        UNWIND $keywords AS kw
+        MATCH (lc:LegalConcept)
+        WHERE lc.name CONTAINS kw OR lc.definition CONTAINS kw
+        OPTIONAL MATCH (lc)-[:REQUIRES]->(req:LegalConcept)
+        OPTIONAL MATCH (lc)-[:DEFINED_IN]->(law:Law)
+        OPTIONAL MATCH (lc)<-[:RELATED_TO]-(rf:RiskFactor)
+        RETURN DISTINCT
+            lc.name       AS node,
+            lc.definition AS definition,
+            lc.law_ref    AS law_ref,
+            collect(DISTINCT req.name)  AS requires,
+            collect(DISTINCT law.name)  AS defined_in,
+            collect(DISTINCT rf.factor_id) AS risk_factors
+        """
+        with self._driver.session() as session:
+            raw = [dict(r) for r in session.run(query, keywords=keywords)]
+
+        # graph_context 형식으로 변환
+        result = []
+        for r in raw:
+            for req in r.get("requires", []):
+                result.append({"node": r["node"], "relation": "requires", "target": req})
+            for law in r.get("defined_in", []):
+                result.append({"node": r["node"], "relation": "defined_in", "target": law})
+            for rf_id in r.get("risk_factors", []):
+                result.append({"node": r["node"], "relation": "related_to_risk", "target": rf_id})
+            if not r.get("requires") and not r.get("defined_in"):
+                result.append({
+                    "node": r["node"],
+                    "relation": "definition",
+                    "target": r.get("definition", ""),
+                })
+        return result
+
+    def get_related_context(
+        self,
+        keywords: list[str],
+        domain: str | None = None,
+    ) -> list[dict]:
+        """
+        키워드 + 도메인으로 그래프 컨텍스트 조회 (LegalConcept + RiskFactor + Law).
+
+        반환 형식:
+        [{"node": ..., "relation": ..., "target": ...}, ...]
+        """
+        domain_filter = "AND d.name = $domain" if domain else ""
+        query = f"""
+        UNWIND $keywords AS kw
+        MATCH (rf:RiskFactor)
+        WHERE rf.keywords CONTAINS kw OR rf.description CONTAINS kw
+        OPTIONAL MATCH (rf)-[:REGULATED_BY]->(law:Law)
+        OPTIONAL MATCH (rf)-[:RELATED_TO]->(lc:LegalConcept)
+        OPTIONAL MATCH (rf)-[:BELONGS_TO]->(d:Domain)
+        WHERE 1=1 {domain_filter}
+        OPTIONAL MATCH (rf)-[:EVIDENCED_BY]->(c:Case)
+        RETURN DISTINCT
+            rf.factor_id   AS rf_id,
+            rf.description AS rf_desc,
+            rf.severity    AS severity,
+            rf.advice      AS advice,
+            collect(DISTINCT law.name)  AS laws,
+            collect(DISTINCT lc.name)   AS concepts,
+            collect(DISTINCT c.name)    AS cases
+        ORDER BY
+            CASE rf.severity WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END
+        LIMIT 10
+        """
+        params: dict = {"keywords": keywords}
+        if domain:
+            params["domain"] = domain
+
+        with self._driver.session() as session:
+            raw = [dict(r) for r in session.run(query, **params)]
+
+        result = []
+        for r in raw:
+            for law in r.get("laws", []):
+                result.append({"node": r["rf_id"], "relation": "regulated_by", "target": law})
+            for concept in r.get("concepts", []):
+                result.append({"node": r["rf_id"], "relation": "related_to", "target": concept})
+            for case in r.get("cases", []):
+                result.append({"node": r["rf_id"], "relation": "evidenced_by", "target": case})
+            if not r.get("laws") and not r.get("concepts"):
+                result.append({
+                    "node": r["rf_id"],
+                    "relation": "description",
+                    "target": r.get("rf_desc", ""),
+                })
+        return result
+
+    def get_document_categories_for_agent(self, agent_name: str) -> list[dict]:
+        """
+        에이전트가 담당하는 DocumentCategory 목록 조회.
+        RAG 검색 시 doc_type 필터에 활용.
+
+        반환:
+        [{"name": "판례", "source_type": "judicial", "domain": "법적절차"}, ...]
+        """
+        query = """
+        MATCH (a:AgentScope {name: $agent_name})-[:COVERS]->(dc:DocumentCategory)
+        OPTIONAL MATCH (dc)-[:BELONGS_TO]->(d:Domain)
+        RETURN dc.name        AS name,
+               dc.source_type AS source_type,
+               dc.description AS description,
+               d.name         AS domain
+        ORDER BY dc.name
+        """
+        with self._driver.session() as session:
+            return [dict(r) for r in session.run(query, agent_name=agent_name)]
+
+    def get_procedures_for_concept(self, concept_name: str) -> list[dict]:
+        """법률 개념과 연결된 절차 목록 조회"""
+        query = """
+        MATCH (p:Procedure)-[:RELATED_TO]->(lc:LegalConcept {name: $concept_name})
+        RETURN p.name        AS name,
+               p.order       AS order,
+               p.timing      AS timing,
+               p.description AS description
+        ORDER BY p.order
+        """
+        with self._driver.session() as session:
+            return [dict(r) for r in session.run(query, concept_name=concept_name)]
+
+    def get_cases_by_risk_factor(
+        self,
+        factor_id: str,
+        doc_type: str | None = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """
+        특정 RiskFactor와 연결된 판례·사례집 조회.
+
+        doc_type: '판례' | '사례집' | None (전체)
+        """
+        doc_filter = "AND c.doc_type = $doc_type" if doc_type else ""
+        query = f"""
+        MATCH (rf:RiskFactor {{factor_id: $factor_id}})-[:EVIDENCED_BY]->(c:Case)
+        WHERE 1=1 {doc_filter}
+        RETURN c.name    AS name,
+               c.doc_type AS doc_type,
+               c.summary  AS summary
+        LIMIT $limit
+        """
+        params: dict = {"factor_id": factor_id, "limit": limit}
+        if doc_type:
+            params["doc_type"] = doc_type
+        with self._driver.session() as session:
+            return [dict(r) for r in session.run(query, **params)]
+
+    def get_full_graph_context(self, keywords: list[str]) -> list[dict]:
+        """
+        키워드 기반 전체 그래프 컨텍스트 반환.
+        RAG 응답의 graph_context 필드에 직접 삽입 가능한 형식.
+
+        반환: [{"node": ..., "relation": ..., "target": ...}, ...]
+        """
+        context = []
+        context.extend(self.get_legal_concepts(keywords))
+        context.extend(self.get_related_context(keywords))
+        # 중복 제거
+        seen = set()
+        unique = []
+        for item in context:
+            key = (item["node"], item["relation"], item["target"])
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+        return unique[:20]  # 최대 20개
+
+    # ─────────────────────────────────────────────────────────
+    # 초기화 (호환용)
+    # ─────────────────────────────────────────────────────────
+
     def init_schema(self) -> None:
         constraints = [
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:RiskFactor) REQUIRE n.factor_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Law) REQUIRE n.name IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Case) REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:RiskFactor)       REQUIRE n.factor_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Law)              REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Case)             REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:LegalConcept)     REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Domain)           REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DocumentCategory) REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AgentScope)       REQUIRE n.name IS UNIQUE",
             "CREATE INDEX IF NOT EXISTS FOR (n:RiskFactor) ON (n.severity)",
         ]
         with self._driver.session() as session:
             for stmt in constraints:
                 session.run(stmt)
-
-    def seed_risk_factors(self) -> None:
-        risk_factors = [
-            {"factor_id": "RF001", "category": "전세가율",
-             "description": "전세가율 80% 초과 — 집값 대비 전세금이 지나치게 높아 경매 시 보증금 회수 불가 위험",
-             "severity": "HIGH", "keywords": "전세가율 보증금 매매가",
-             "advice": "KB부동산·호갱노노에서 시세 확인 후 전세가율 80% 미만 매물 선택",
-             "laws": ["주택임대차보호법 제3조의3"]},
-            {"factor_id": "RF002", "category": "권리관계",
-             "description": "근저당·가압류 과다 — 선순위 권리 합계가 보증금을 초과하면 경매 시 손실",
-             "severity": "HIGH", "keywords": "근저당 가압류 저당권 선순위",
-             "advice": "계약 전 등기부등본 발급, 선순위 권리 합산액 확인",
-             "laws": ["민법 제356조", "주택임대차보호법 제8조"]},
-            {"factor_id": "RF003", "category": "권리관계",
-             "description": "미등기·무허가 건물 — 등기가 없으면 임차인의 대항력 취득 자체 불가",
-             "severity": "HIGH", "keywords": "미등기 무허가 건축물대장",
-             "advice": "건축물대장·등기부등본 일치 여부 반드시 확인",
-             "laws": ["주택임대차보호법 제3조"]},
-            {"factor_id": "RF004", "category": "절차",
-             "description": "계약금 현금 요구 — 사기 가능성 신호",
-             "severity": "HIGH", "keywords": "현금 계약금 직접 입금",
-             "advice": "계좌 이체 후 영수증 보관, 임대인 본인 계좌 확인",
-             "laws": ["공인중개사법 제33조"]},
-            {"factor_id": "RF005", "category": "절차",
-             "description": "임대인 신원 미확인 — 계약서상 임대인과 등기부 소유자가 다른 경우",
-             "severity": "HIGH", "keywords": "임대인 소유자 신분증 대리인",
-             "advice": "신분증·등기권리증 대조, 대리인 계약 시 위임장·인감증명서 필수",
-             "laws": ["공인중개사법 제25조"]},
-            {"factor_id": "RF006", "category": "전세가율",
-             "description": "전세가율 70~80% — 주의 구간, 시세 변동에 취약",
-             "severity": "MEDIUM", "keywords": "전세가율",
-             "advice": "전세보증보험(HUG/SGI) 가입 검토",
-             "laws": ["주택도시보증공사법"]},
-            {"factor_id": "RF007", "category": "특약",
-             "description": "불리한 특약 조항 — 과도한 의무 전가",
-             "severity": "MEDIUM", "keywords": "특약 원상복구 수리 책임",
-             "advice": "특약 조항 법률 검토 후 협의",
-             "laws": ["주택임대차보호법 제10조"]},
-            {"factor_id": "RF008", "category": "절차",
-             "description": "확정일자·전입신고 미이행 — 대항력과 우선변제권 미취득",
-             "severity": "MEDIUM", "keywords": "확정일자 전입신고 대항력",
-             "advice": "입주 당일 전입신고 + 확정일자 동시 취득 필수",
-             "laws": ["주택임대차보호법 제3조의2"]},
-            {"factor_id": "RF009", "category": "권리관계",
-             "description": "집주인의 다수 전세 계약 — 빌라왕 패턴",
-             "severity": "HIGH", "keywords": "다수 전세 빌라왕 동일 건물",
-             "advice": "등기부등본에서 임차권등기 다수 여부 확인",
-             "laws": ["주택임대차보호법 제3조의3"]},
-            {"factor_id": "RF010", "category": "절차",
-             "description": "전세보증보험 미가입 — 보증금 반환 수단 없음",
-             "severity": "MEDIUM", "keywords": "전세보증보험 HUG SGI",
-             "advice": "HUG 전세보증금반환보증 또는 SGI서울보증 가입 권고",
-             "laws": ["주택도시보증공사법 제16조"]},
-        ]
-
-        with self._driver.session() as session:
-            for rf in risk_factors:
-                session.run(
-                    """
-                    MERGE (rf:RiskFactor {factor_id: $factor_id})
-                    SET rf.category    = $category,
-                        rf.description = $description,
-                        rf.severity    = $severity,
-                        rf.keywords    = $keywords,
-                        rf.advice      = $advice
-                    """,
-                    **{k: v for k, v in rf.items() if k != "laws"},
-                )
-                for law in rf.get("laws", []):
-                    session.run(
-                        """
-                        MERGE (l:Law {name: $law})
-                        WITH l
-                        MATCH (rf:RiskFactor {factor_id: $factor_id})
-                        MERGE (rf)-[:REGULATED_BY]->(l)
-                        """,
-                        law=law, factor_id=rf["factor_id"],
-                    )
-        print(f"✅ Neo4j 시드 데이터 적재 완료: {len(risk_factors)}개 위험 요소")

@@ -32,10 +32,16 @@ class Settings(BaseSettings):
         """LangChain PGVector용 연결 문자열"""
         return self.DATABASE_URL
 
-    # ── OpenAI ────────────────────────────────────
+    # ── OpenAI (embedding 전용 — chat LLM은 Groq 사용) ───
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    OPENAI_TEMPERATURE: float = 0.0
+    EMBEDDING_TEMPERATURE: float = 0.0   # 임베딩에는 미사용, 호환용
+
+    # ── Groq (chat LLM) ───────────────────────────
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_TEMPERATURE: float = 0.0
+    LLM_PROVIDER: str = "groq"
 
     # ── pgvector (Vector DB — PostgreSQL 내장) ────
     PG_VECTOR_COLLECTION: str = "jeonse_docs"

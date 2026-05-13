@@ -29,7 +29,7 @@ from pathlib import Path
 import requests
 
 # ── 설정 ──────────────────────────────────────────────────────
-BASE_URL   = os.getenv("API_BASE_URL", "http://localhost:8000")
+BASE_URL   = os.getenv("API_BASE_URL", "http://localhost:8001")
 API_PREFIX = "/api/v1"
 TIMEOUT    = 60          # 초 (LLM 호출 포함이라 여유 있게)
 SESSION_ID = f"test-{uuid.uuid4().hex[:8]}"

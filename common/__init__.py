@@ -1,1 +1,1 @@
-﻿
+"""Contract diagnosis LangGraph package."""

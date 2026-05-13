@@ -23,12 +23,14 @@ langchain==0.3.25
 langchain-core>=0.3.59,<1.0.0
 langchain-community>=0.3.24,<0.4.0
 langchain-text-splitters>=0.3.8,<1.0.0
+# langchain-openai: chat LLM은 Groq(OpenAI-compatible API), embedding은 OpenAI 그대로 사용
 langchain-openai>=0.3.17,<0.4.0
 langchain-ollama>=0.3.3,<0.4.0
 langchain-postgres>=0.0.15,<0.1.0
 langsmith>=0.1.17,<0.4.0
 openai>=1.68.2,<2.0.0
 tiktoken==0.9.0
+groq>=0.9.0,<1.0.0
 
 # =====================
 # RAG / PDF

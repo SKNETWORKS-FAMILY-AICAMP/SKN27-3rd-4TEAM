@@ -1,1 +1,1 @@
-﻿"""LangGraph state node adapters."""
+"""Node layer for the contract diagnosis graph."""

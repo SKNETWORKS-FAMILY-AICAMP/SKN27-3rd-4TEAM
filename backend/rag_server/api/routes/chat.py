@@ -28,6 +28,7 @@ async def chat_query(body: ChatRequest, rag: RAGPipeline = Depends(get_rag_pipel
             session_id=body.session_id,
             answer=result["answer"],
             references=result.get("references", []),
+            graph_context=result.get("graph_context", []),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG 처리 오류: {str(e)}")

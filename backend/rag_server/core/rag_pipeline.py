@@ -17,6 +17,33 @@ from rag_server.core.llm import build_rag_chain, build_diagnosis_chain
 from rag_server.models.schemas import RagReference, RiskFactor
 
 
+def _extract_keywords(text: str) -> list[str]:
+    """
+    질문/키워드 문자열에서 조사를 제거하고 정규화된 키워드 리스트 반환.
+    예: "근저당이 많은 집에" → ["근저당", "집"]
+    Neo4j 키워드 매칭에서 조사 때문에 미매칭되는 문제를 방지.
+    """
+    import re
+    # 한국어 조사 패턴 (이/가/은/는/을/를/에/의/로/으로/과/와/도/만/에서/부터/까지/랑/이랑/하고)
+    JOSA = re.compile(
+        r"(이|가|은|는|을|를|에|의|로|으로|과|와|도|만|에서|부터|까지|랑|이랑|하고|이다|다|면|으면|이면|고|이고)$"
+    )
+    tokens = text.split()
+    keywords = []
+    for token in tokens:
+        cleaned = JOSA.sub("", token).strip()
+        if len(cleaned) >= 2:
+            keywords.append(cleaned)
+    # 중복 제거 + 순서 유지
+    seen: set[str] = set()
+    result = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            result.append(kw)
+    return result[:10]
+
+
 def _first_metadata_value(metadata: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         value = metadata.get(key)
@@ -50,9 +77,20 @@ class RAGPipeline:
         response = await self._rag_chain.ainvoke({
             "context": context_text, "history": lc_history, "question": question,
         })
+
+        # graph_context: 질문 키워드 기반 Neo4j 그래프 컨텍스트
+        # 조사 제거 후 정규화 (근저당이→근저당, 전입신고를→전입신고 등)
+        keywords = _extract_keywords(question)
+        graph_context: list[dict] = []
+        try:
+            graph_context = self._graph_store.get_full_graph_context(keywords)
+        except Exception as e:
+            print(f"[GraphStore] chat graph_context 조회 실패: {e}")
+
         return {
             "answer": response.content if hasattr(response, "content") else str(response),
             "references": self._build_references(raw_results),
+            "graph_context": graph_context,
         }
 
     # ── 계약서 진단 ───────────────────────────────────────
@@ -80,6 +118,16 @@ class RAGPipeline:
         raw_answer = response.content if hasattr(response, "content") else str(response)
         parsed = self._parse_diagnosis_response(raw_answer, graph_risks)
         parsed["references"] = self._build_references(raw_results)
+
+        # graph_context: [{node, relation, target}] 형식으로 설계서 규격에 맞게 반환
+        graph_context: list[dict] = []
+        try:
+            norm_keywords = _extract_keywords(" ".join(contract_keywords[:8]))
+            graph_context = self._graph_store.get_full_graph_context(norm_keywords)
+        except Exception as e:
+            print(f"[GraphStore] diagnose graph_context 조회 실패: {e}")
+
+        parsed["graph_context"] = graph_context
         return parsed
 
     # ── 내부 헬퍼 ─────────────────────────────────────────
