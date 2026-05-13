@@ -47,7 +47,7 @@ def build_model(hidden: int = 64):
     return LSTMRegressor()
 
 
-def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: Path = MODEL_DIR) -> dict:
+def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: Path = MODEL_DIR, save_artifacts: bool = True) -> dict:
     try:
         import torch
         import torch.nn as nn
@@ -126,8 +126,10 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: P
                 naive_rmse = float(np.sqrt(mean_squared_error(actual, naive)))
             else:
                 mae = rmse = naive_mae = naive_rmse = 0.0
-        torch.save(best_state, output_dir / f"lstm_{key}.pt")
-        joblib.dump(scaler, output_dir / f"lstm_scaler_{key}.pkl")
+        if save_artifacts:
+            # 테스트 실행에서는 모델 파일 저장을 끄고, 실제 배포용 학습에서만 저장합니다.
+            torch.save(best_state, output_dir / f"lstm_{key}.pt")
+            joblib.dump(scaler, output_dir / f"lstm_scaler_{key}.pkl")
         results[key] = {
             "mae": round(mae, 2),
             "rmse": round(rmse, 2),
@@ -142,7 +144,9 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: P
 
 
     summary = {"trained_models": results, "skipped": skipped}
-    (output_dir / "lstm_metadata.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if save_artifacts:
+        # 저장 모드에서만 추론 재사용을 위한 학습 메타데이터를 남깁니다.
+        (output_dir / "lstm_metadata.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 
 

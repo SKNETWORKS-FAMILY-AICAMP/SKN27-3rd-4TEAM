@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 
 import joblib
@@ -30,7 +34,55 @@ FEATURES = [
 LEAKED_FEATURES = ["z_score", "jeonse_ratio", "q25", "q75"]
 
 
-def prepare_features(df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
+def _save_tabnet_model_zip(model, output_dir: Path) -> Path:
+    from pytorch_tabnet.utils import ComplexEncoder
+    import torch
+
+    # pytorch-tabnet의 기본 save_model은 Windows에서 임시 폴더 삭제 실패가 날 수 있어 직접 zip을 만듭니다.
+    temp_parent = Path(os.getenv("TABNET_TEMP_DIR", output_dir / "tmp"))
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tabnet_anomaly_", dir=temp_parent, ignore_cleanup_errors=True) as temp_root:
+        temp_model_dir = Path(temp_root) / "tabnet_anomaly"
+        temp_model_dir.mkdir(parents=True, exist_ok=True)
+        saved_params = {"init_params": {}, "class_attrs": {"preds_mapper": model.preds_mapper}}
+        for key, value in model.get_params().items():
+            if not isinstance(value, type):
+                saved_params["init_params"][key] = value
+        (temp_model_dir / "model_params.json").write_text(json.dumps(saved_params, cls=ComplexEncoder), encoding="utf8")
+        torch.save(model.network.state_dict(), temp_model_dir / "network.pt")
+        staged_zip = Path(shutil.make_archive(str(Path(temp_root) / "tabnet_anomaly"), "zip", temp_model_dir))
+        target_zip = output_dir / "tabnet_anomaly.zip"
+        try:
+            staged_zip.replace(target_zip)
+        except PermissionError:
+            target_zip = output_dir / f"tabnet_anomaly_{uuid.uuid4().hex}.zip"
+            staged_zip.replace(target_zip)
+    _cleanup_stale_tabnet_models(output_dir, keep_path=target_zip)
+    return target_zip
+
+
+def _cleanup_stale_tabnet_models(output_dir: Path, keep_path: Path) -> None:
+    # 테스트를 반복해도 TabNet 모델 zip/임시 폴더가 무한히 쌓이지 않도록 최신 산출물만 남깁니다.
+    for path in output_dir.glob("tabnet_anomaly_*.zip"):
+        if path != keep_path:
+            try:
+                path.unlink(missing_ok=True)
+            except PermissionError:
+                continue
+    for path in output_dir.glob("tabnet_anomaly_*"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _latest_tabnet_model_path() -> Path:
+    # 고정 파일명이 잠긴 경우를 대비해 버전별 zip 중 가장 최신 모델을 사용합니다.
+    candidates = list(MODEL_DIR.glob("tabnet_anomaly_*.zip"))
+    if candidates:
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+    return MODEL_DIR / "tabnet_anomaly.zip"
+
+
+def prepare_features(df: pd.DataFrame, fit: bool = True, save_encoders: bool = True) -> pd.DataFrame:
     from sklearn.preprocessing import LabelEncoder
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,7 +92,9 @@ def prepare_features(df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         if fit:
             encoder = LabelEncoder()
             out[target] = encoder.fit_transform(out[col].fillna("unknown").astype(str))
-            joblib.dump(encoder, path)
+            if save_encoders:
+                # 테스트 실행에서는 인코더 파일 저장을 끄고, 실제 추론 재사용 시에만 저장합니다.
+                joblib.dump(encoder, path)
         else:
             encoder = joblib.load(path)
             values = out[col].fillna("unknown").astype(str)
@@ -53,7 +107,7 @@ def prepare_features(df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
     return out
 
 
-def train(input_path: Path = PROCESSED_DIR / "jeonse_labeled.csv", output_dir: Path = MODEL_DIR) -> dict:
+def train(input_path: Path = PROCESSED_DIR / "jeonse_labeled.csv", output_dir: Path = MODEL_DIR, save_artifacts: bool = True) -> dict:
     try:
         from pytorch_tabnet.tab_model import TabNetClassifier
         from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
@@ -63,7 +117,7 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_labeled.csv", output_dir: P
 
     output_dir.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(input_path, encoding="utf-8-sig")
-    df = prepare_features(df, fit=True).dropna(subset=FEATURES + ["is_anomaly"])
+    df = prepare_features(df, fit=True, save_encoders=save_artifacts).dropna(subset=FEATURES + ["is_anomaly"])
     if len(df) < 30:
         raise ValueError("TabNet training requires at least 30 labeled rows.")
     x = df[FEATURES].to_numpy(dtype=np.float32)
@@ -118,8 +172,13 @@ def train(input_path: Path = PROCESSED_DIR / "jeonse_labeled.csv", output_dir: P
             for feature, value in zip(FEATURES, model.feature_importances_, strict=False)
         },
     }
-    model.save_model(str(output_dir / "tabnet_anomaly"))
-    (output_dir / "tabnet_metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    if save_artifacts:
+        # 저장 모드에서만 추론 재사용을 위한 모델 zip과 메타데이터를 남깁니다.
+        model_path = _save_tabnet_model_zip(model, output_dir)
+        metadata["model_path"] = str(model_path)
+        (output_dir / "tabnet_metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        metadata["model_path"] = None
     return metadata
 
 
@@ -127,7 +186,7 @@ def predict_one(candidate: dict) -> dict:
     from pytorch_tabnet.tab_model import TabNetClassifier
 
     model = TabNetClassifier()
-    model.load_model(str(MODEL_DIR / "tabnet_anomaly.zip"))
+    model.load_model(str(_latest_tabnet_model_path()))
     row = prepare_features(pd.DataFrame([candidate]), fit=False)
     prob = float(model.predict_proba(row[FEATURES].to_numpy(dtype=np.float32))[0][1])
     return {

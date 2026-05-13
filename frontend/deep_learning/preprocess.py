@@ -107,6 +107,8 @@ def normalize_jeonse(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["sido"] = out.get("sido", "서울특별시")
     out["sigungu"] = out.get("sigungu", out.get("sgg_name", "종로구"))
+    # CSV 원천에 시군구 값이 비어 있으면 파일명 기준 대상 지역인 종로구로 보정합니다.
+    out["sigungu"] = out["sigungu"].fillna("종로구").astype(str).str.strip().replace("", "종로구")
     out["dong_name"] = out.get("dong_name", "").fillna("").astype(str).str.strip()
     out["property_name"] = out.get("property_name", "").fillna("").astype(str).str.strip()
     out["jibun"] = out.get("jibun", "").fillna("").astype(str).str.strip()
