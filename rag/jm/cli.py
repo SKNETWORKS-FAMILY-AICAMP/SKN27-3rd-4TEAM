@@ -18,6 +18,8 @@ from .retrieval.search import search
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
+    """CLI에서 문서 적재 명령을 실행합니다."""
+
     result = ingest_paths(
         paths=args.path,
         glob_pattern=args.glob,
@@ -29,6 +31,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
+    """CLI에서 RAG 검색 명령을 실행합니다."""
+
     where = json.loads(args.where) if args.where else None
     hits = search(query=args.query, k=args.k, where=where)
     payload = [{"score": h.score, "metadata": h.metadata, "content": h.content} for h in hits]
@@ -37,6 +41,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
+    """CLI에서 검색 기반 답변 생성 명령을 실행합니다."""
+
     where = json.loads(args.where) if args.where else None
     result = generate_answer(query=args.query, k=args.k, where=where)
     payload = {
@@ -48,12 +54,16 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent(args: argparse.Namespace) -> int:
+    """CLI에서 기존 Supervisor 에이전트를 실행합니다."""
+
     answer = run_agent(query=args.query)
     print(json.dumps({"answer": answer}, ensure_ascii=False, indent=2))
     return 0
 
 
 def _cmd_multi_agent(args: argparse.Namespace) -> int:
+    """CLI에서 역할 분리형 멀티에이전트를 실행합니다."""
+
     result = run_multi_agent(query=args.query, k=args.k)
     payload = {
         "answer": result.answer,
@@ -74,6 +84,8 @@ def _cmd_multi_agent(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """CLI argument를 파싱하고 선택된 하위 명령을 실행합니다."""
+
     load_dotenv()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
