@@ -1,7 +1,6 @@
 services:
-
   # =============================================
-  # PostgreSQL DB 컨테이너
+  # PostgreSQL DB 컨테이너 (pgvector 포함 이미지)
   # =============================================
   db:
     image: pgvector/pgvector:pg16
@@ -15,6 +14,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./database/00-extensions.sql:/docker-entrypoint-initdb.d/00-extensions.sql:ro
       - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d jeonse_risk"]
@@ -78,7 +78,7 @@ services:
     command: ["python", "scripts/preprocess_load.py"]
 
   # =============================================
-  # 배치 컨테이너 (매주 월요일 오전 6시 자동 실행)
+  # 배치 컨테이너 (정기 실행)
   # =============================================
   batch:
     build: .
