@@ -25,7 +25,7 @@ def load_config() -> RagConfig:
     """환경변수에서 OpenAI RAG 설정을 로드합니다."""
 
     return RagConfig(
-        collection=os.getenv("RAG_COLLECTION", os.getenv("PG_VECTOR_COLLECTION", "jeonse_docs")),
+        collection=os.getenv("RAG_COLLECTION", "jeonse-rag"),
         embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
         llm_model=os.getenv("RAG_LLM_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
         chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "900")),

@@ -1,6 +1,6 @@
 ## rag/jm
 
-PostgreSQL(pgvector) 기반 OpenAI RAG 모듈입니다. 기존 프로젝트의 `jeonse_docs` PGVector 컬렉션을 조회하고, OpenAI 임베딩/채팅 모델로 검색과 답변 생성을 수행합니다.
+PostgreSQL(pgvector) 기반 OpenAI RAG 모듈입니다. 기존 OpenAI 임베딩 기반 `jeonse-rag` PGVector 컬렉션을 조회하고, OpenAI 임베딩/채팅 모델로 검색과 답변 생성을 수행합니다.
 
 ### 주요 기능
 
@@ -15,7 +15,7 @@ PostgreSQL(pgvector) 기반 OpenAI RAG 모듈입니다. 기존 프로젝트의 `
 - `OPENAI_MODEL`: 기본값 `gpt-4o-mini`
 - `RAG_LLM_MODEL`: 설정하면 `OPENAI_MODEL`보다 우선 사용
 - `RAG_EMBEDDING_MODEL`: 기본값 `text-embedding-3-small`
-- `RAG_COLLECTION`: 기본값 `jeonse_docs`
+- `RAG_COLLECTION`: 기본값 `jeonse-rag`
 - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL 접속 정보
 
 ### 실행 예시
