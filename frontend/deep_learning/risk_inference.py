@@ -60,7 +60,8 @@ def _score_risk(gap_pct, jeonse_ratio, forecast_change_pct, building_gap_pct):
             score += 12
             reasons.append("입력 보증금이 최근 지역 평당가보다 높은 편입니다.")
         elif gap_pct <= -35:
-            score += 10
+            # 시세보다 과도하게 낮은 보증금은 허위매물 가능성이 있어 최소 주의 등급까지 올립니다.
+            score += 20
             reasons.append("입력 보증금이 지역 시세보다 과도하게 낮아 허위매물 또는 특이 조건 여부 확인이 필요합니다.")
 
     if jeonse_ratio is not None:
