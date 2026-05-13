@@ -36,15 +36,10 @@ services:
       DB_PORT: 5432
       DB_NAME: jeonse_risk
       DB_USER: postgres
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./rag/scripts:/app/scripts
-      - ./docs:/app/docs
     depends_on:
       db:
         condition: service_healthy
-    command: ["python", "scripts/preprocess_load.py"]
+    command: ["python", "rag/scripts/preprocess_load.py"]
 
   # =============================================
   # 배치 컨테이너 (매주 월요일 오전 6시 자동 실행)
@@ -63,9 +58,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./rag/scripts:/app/scripts
       - ./docs:/app/docs
-      - ./batch.sh:/app/batch.sh
     depends_on:
       db:
         condition: service_healthy

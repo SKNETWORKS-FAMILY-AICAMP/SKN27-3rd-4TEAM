@@ -3,7 +3,7 @@
 데이터 전처리 + PostgreSQL 적재 스크립트
 
 수정사항:
-- 23~25년 여러 파일 glob으로 읽기
+- 2016~2025년 전세/매매 데이터 glob으로 읽기
 - 전세/매매 컬럼 통일 (파일명 기반 housing_type 자동 감지)
 - 매매 23-24 vs 25 컬럼 분기 처리
 - 날짜 처리 (deal_date → deal_year_month)
@@ -129,10 +129,12 @@ def _normalize_sale_cols(df: pd.DataFrame, housing_type: str, fname: str) -> pd.
     """파일마다 다른 컬럼명 통일 (23-24 vs 25 분기)"""
 
     df["housing_type"] = housing_type
+    default_text = pd.Series([""] * len(df), index=df.index)
+    default_zero = pd.Series([0] * len(df), index=df.index)
 
     # deal_amount 처리
     df["deal_amount"] = pd.to_numeric(
-        df.get("deal_amount", "0").astype(str).str.replace(",", ""), errors="coerce"
+        df.get("deal_amount", default_zero).astype(str).str.replace(",", ""), errors="coerce"
     ).fillna(0)
 
     # bldg_nm / property_name 통일
@@ -160,6 +162,16 @@ def _normalize_sale_cols(df: pd.DataFrame, housing_type: str, fname: str) -> pd.
             df["sigungu"] = ""
     df["sigungu"] = df["sigungu"].fillna("")
 
+    # dong_name 통일
+    if "dong_name" not in df.columns:
+        if "umd_nm" in df.columns:
+            df["dong_name"] = df["umd_nm"]
+        elif "legal_dong" in df.columns:
+            df["dong_name"] = df["legal_dong"]
+        else:
+            df["dong_name"] = ""
+    df["dong_name"] = df["dong_name"].fillna("")
+
     # deal_year_month 처리
     if "deal_year_month" in df.columns:
         # 25년 매매: deal_year_month + deal_day 이미 분리돼 있음
@@ -174,7 +186,7 @@ def _normalize_sale_cols(df: pd.DataFrame, housing_type: str, fname: str) -> pd.
 
     df["floor"]      = pd.to_numeric(df.get("floor", 0), errors="coerce").fillna(0).astype(int)
     df["build_year"] = pd.to_numeric(df.get("build_year", 0), errors="coerce").fillna(0).astype(int)
-    df["deal_type"]  = df.get("deal_type", "").fillna("")
+    df["deal_type"]  = df.get("deal_type", default_text).fillna("")
 
     return df
 
@@ -227,6 +239,9 @@ def preprocess_sale_all() -> tuple[pd.DataFrame, pd.DataFrame]:
 # 3. 전세가율 계산
 # =============================================
 def calc_price_ratio(jeonse_df: pd.DataFrame, sale_df: pd.DataFrame) -> pd.DataFrame:
+    """기존 전세가율은 유지하고, 동/주택유형별 평당가율을 추가 계산."""
+    M2_PER_PYEONG = 3.305785
+
     def area_bucket(area):
         if area < 33:   return "~33㎡"
         elif area < 66: return "33~66㎡"
@@ -234,47 +249,88 @@ def calc_price_ratio(jeonse_df: pd.DataFrame, sale_df: pd.DataFrame) -> pd.DataF
         else:           return "99㎡~"
 
     jeonse_df = jeonse_df.copy()
-    sale_df   = sale_df.copy()
+    sale_df = sale_df.copy()
 
     jeonse_df["area_range"] = jeonse_df["exclusive_area_m2"].apply(area_bucket)
-    sale_df["area_range"]   = sale_df["exclusive_area"].apply(
+    sale_df["area_range"] = sale_df["exclusive_area"].apply(
         lambda x: area_bucket(x) if pd.notna(x) else "미상"
     )
 
     jeonse_avg = jeonse_df.groupby(
-        ["dong_name", "area_range", "housing_type"]
-    )["deposit_amount"].mean().reset_index()
-    jeonse_avg.columns = ["dong_name", "area_range", "housing_type", "avg_deposit"]
+        ["dong_name", "area_range", "housing_type"], as_index=False
+    )["deposit_amount"].mean()
+    jeonse_avg = jeonse_avg.rename(columns={"deposit_amount": "avg_deposit"})
 
     sale_avg = sale_df.groupby(
-        ["area_range", "housing_type"]
-    )["deal_amount"].mean().reset_index()
-    sale_avg.columns = ["area_range", "housing_type", "avg_sale_price"]
+        ["area_range", "housing_type"], as_index=False
+    )["deal_amount"].mean()
+    sale_avg = sale_avg.rename(columns={"deal_amount": "avg_sale_price"})
 
     merged = jeonse_avg.merge(sale_avg, on=["area_range", "housing_type"], how="left")
     merged["jeonse_ratio"] = (
-        merged["avg_deposit"] / merged["avg_sale_price"] * 100
+        merged["avg_deposit"] / merged["avg_sale_price"].replace(0, np.nan) * 100
     ).round(2)
 
-    def risk_level(ratio):
-        if pd.isna(ratio): return "미상"
-        elif ratio >= 80:  return "위험"
-        elif ratio >= 70:  return "주의"
-        else:              return "안전"
+    jeonse_df["pyeong"] = jeonse_df["exclusive_area_m2"] / M2_PER_PYEONG
+    sale_df["pyeong"] = sale_df["exclusive_area"] / M2_PER_PYEONG
+    jeonse_per_pyeong = jeonse_df[jeonse_df["pyeong"] > 0].copy()
+    sale_per_pyeong = sale_df[sale_df["pyeong"] > 0].copy()
 
-    merged["risk_level"] = merged["jeonse_ratio"].apply(risk_level)
+    jeonse_per_pyeong["deposit_per_pyeong"] = (
+        jeonse_per_pyeong["deposit_amount"] / jeonse_per_pyeong["pyeong"]
+    )
+    sale_per_pyeong["sale_price_per_pyeong"] = (
+        sale_per_pyeong["deal_amount"] / sale_per_pyeong["pyeong"]
+    )
 
-    # base_year_month 동적 설정 (데이터 최신 연월)
+    pyeong_jeonse_avg = jeonse_per_pyeong.groupby(
+        ["dong_name", "housing_type"], as_index=False
+    )["deposit_per_pyeong"].mean()
+    pyeong_jeonse_avg = pyeong_jeonse_avg.rename(
+        columns={"deposit_per_pyeong": "avg_deposit_per_pyeong"}
+    )
+
+    pyeong_sale_avg = sale_per_pyeong.groupby(
+        ["dong_name", "housing_type"], as_index=False
+    )["sale_price_per_pyeong"].mean()
+    pyeong_sale_avg = pyeong_sale_avg.rename(
+        columns={"sale_price_per_pyeong": "avg_sale_price_per_pyeong"}
+    )
+
+    pyeong_ratio = pyeong_jeonse_avg.merge(
+        pyeong_sale_avg, on=["dong_name", "housing_type"], how="left"
+    )
+    pyeong_ratio["pyeong_jeonse_ratio"] = (
+        pyeong_ratio["avg_deposit_per_pyeong"]
+        / pyeong_ratio["avg_sale_price_per_pyeong"].replace(0, np.nan)
+        * 100
+    ).round(2)
+
+    merged = merged.merge(
+        pyeong_ratio,
+        on=["dong_name", "housing_type"],
+        how="left",
+    )
+
     latest = jeonse_df["contract_date"].dropna().max()
     merged["base_year_month"] = int(
         pd.Timestamp(latest).strftime("%Y%m")
     ) if latest else 202512
 
-    merged["avg_deposit"]    = merged["avg_deposit"].fillna(0).astype(int)
-    merged["avg_sale_price"] = merged["avg_sale_price"].fillna(0).astype(int)
+    int_columns = [
+        "avg_deposit", "avg_sale_price",
+        "avg_deposit_per_pyeong", "avg_sale_price_per_pyeong",
+    ]
+    for col in int_columns:
+        merged[col] = merged[col].fillna(0).round().astype(int)
 
-    print(f"[전세가율] 계산 완료: {len(merged)}개 구간")
-    print(merged["risk_level"].value_counts())
+    merged = merged[
+        ["dong_name", "housing_type", "area_range", "avg_deposit",
+        "avg_sale_price", "jeonse_ratio", "avg_deposit_per_pyeong",
+        "avg_sale_price_per_pyeong", "pyeong_jeonse_ratio", "base_year_month"]
+    ]
+
+    print(f"[전세가율/평당가율] 계산 완료: {len(merged)}개 구간")
     return merged
 
 
@@ -287,6 +343,14 @@ def load_to_postgres(jeonse_df, sale_연립, sale_오피스텔, ratio_df):
     cur  = conn.cursor()
 
     try:
+        cur.execute("""
+            ALTER TABLE price_ratio
+                ADD COLUMN IF NOT EXISTS avg_deposit_per_pyeong INTEGER,
+                ADD COLUMN IF NOT EXISTS avg_sale_price_per_pyeong INTEGER,
+                ADD COLUMN IF NOT EXISTS pyeong_jeonse_ratio NUMERIC(5,2),
+                DROP COLUMN IF EXISTS risk_level
+        """)
+
         # 전세 적재
         jeonse_rows = [
             (
@@ -301,11 +365,11 @@ def load_to_postgres(jeonse_df, sale_연립, sale_오피스텔, ratio_df):
         execute_values(cur, """
             INSERT INTO jeonse_transactions
             (housing_type, property_name, dong_name, jibun, exclusive_area_m2,
-             deposit_amount, monthly_rent, floor, build_year,
-             contract_type, contract_term, contract_date)
+            deposit_amount, monthly_rent, floor, build_year,
+            contract_type, contract_term, contract_date)
             VALUES %s
             ON CONFLICT (housing_type, dong_name, jibun, exclusive_area_m2,
-                         deposit_amount, contract_date, floor)
+                        deposit_amount, contract_date, floor)
             DO UPDATE SET
                 property_name = EXCLUDED.property_name,
                 contract_type = EXCLUDED.contract_type,
@@ -328,37 +392,43 @@ def load_to_postgres(jeonse_df, sale_연립, sale_오피스텔, ratio_df):
         execute_values(cur, """
             INSERT INTO sale_transactions
             (housing_type, sigungu, bldg_nm, exclusive_area, deal_amount,
-             floor, build_year, deal_year_month, deal_type)
+            floor, build_year, deal_year_month, deal_type)
             VALUES %s
             ON CONFLICT (housing_type, bldg_nm, exclusive_area,
-                         deal_amount, deal_year_month, floor)
+                        deal_amount, deal_year_month, floor)
             DO UPDATE SET
                 deal_type = EXCLUDED.deal_type,
                 sigungu   = EXCLUDED.sigungu
         """, sale_rows)
         print(f"[적재] sale_transactions: {len(sale_rows)}건")
 
-        # 전세가율 적재
+        # 전세가율/평당가율 적재
         ratio_rows = [
             (
                 row.dong_name, row.housing_type, row.area_range,
                 row.avg_deposit, row.avg_sale_price,
                 row.jeonse_ratio if pd.notna(row.jeonse_ratio) else None,
-                row.risk_level, row.base_year_month
+                row.avg_deposit_per_pyeong,
+                row.avg_sale_price_per_pyeong,
+                row.pyeong_jeonse_ratio if pd.notna(row.pyeong_jeonse_ratio) else None,
+                row.base_year_month,
             )
             for row in ratio_df.itertuples()
         ]
         execute_values(cur, """
             INSERT INTO price_ratio
             (dong_name, housing_type, area_range, avg_deposit, avg_sale_price,
-             jeonse_ratio, risk_level, base_year_month)
+            jeonse_ratio, avg_deposit_per_pyeong, avg_sale_price_per_pyeong,
+            pyeong_jeonse_ratio, base_year_month)
             VALUES %s
             ON CONFLICT (dong_name, housing_type, area_range, base_year_month)
             DO UPDATE SET
-                avg_deposit    = EXCLUDED.avg_deposit,
-                avg_sale_price = EXCLUDED.avg_sale_price,
-                jeonse_ratio   = EXCLUDED.jeonse_ratio,
-                risk_level     = EXCLUDED.risk_level
+                avg_deposit               = EXCLUDED.avg_deposit,
+                avg_sale_price            = EXCLUDED.avg_sale_price,
+                jeonse_ratio              = EXCLUDED.jeonse_ratio,
+                avg_deposit_per_pyeong    = EXCLUDED.avg_deposit_per_pyeong,
+                avg_sale_price_per_pyeong = EXCLUDED.avg_sale_price_per_pyeong,
+                pyeong_jeonse_ratio       = EXCLUDED.pyeong_jeonse_ratio
         """, ratio_rows)
         print(f"[적재] price_ratio: {len(ratio_rows)}건")
 

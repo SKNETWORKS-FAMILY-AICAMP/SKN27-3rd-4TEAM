@@ -1,17 +1,16 @@
 """
 Forecast Jongno-gu sale prices and estimate can-jeonse risk.
 
-Method B:
-1. Build a monthly panel from sale/jeonse transactions.
-2. Train 1, 3, 6, and 12 month forward sale-price growth models.
-3. Extend the 1 month model recursively to a 24 month sale-price forecast.
-4. Compare current jeonse price per pyeong with the 24 month sale-price forecast.
+Input data:
+    data/*.csv
 
-The model predicts group-level prices by:
-    dong_name + property_type
+Output:
+    modeling/artifacts/can_jeonse/
 
-Area is normalized by converting each transaction to price per pyeong, so an
-extra area bucket is not used.
+The model aggregates transactions by:
+    dong_name + property_type + month
+
+Area is normalized with price per pyeong, so no area bucket is used.
 """
 
 from __future__ import annotations
@@ -28,7 +27,16 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
+from sklearn.metrics import (
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    mean_absolute_error,
+    mean_absolute_percentage_error,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
@@ -45,12 +53,13 @@ except ImportError:  # pragma: no cover
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
-ARTIFACT_DIR = ROOT / "backend" / "modeling" / "artifacts" / "can_jeonse"
+ARTIFACT_DIR = ROOT / "modeling" / "artifacts" / "can_jeonse"
 
 M2_PER_PYEONG = 3.3058
-HORIZONS = (1, 3, 6, 12)
+HORIZONS = (1, 3, 6, 12, 24)
+RISK_THRESHOLD = 0.80
 GROUP_KEYS = ["dong_name", "property_type"]
 CAT_COLS = ["dong_name", "property_type"]
 NUM_COLS = [
@@ -82,6 +91,12 @@ class ModelBundle:
     horizon: int
     lightgbm: Pipeline
     catboost: Pipeline | None
+
+
+def safe_auc(metric_func, y_true: pd.Series, y_score: np.ndarray) -> float:
+    if len(pd.Series(y_true).dropna().unique()) < 2:
+        return float("nan")
+    return float(metric_func(y_true, y_score))
 
 
 def parse_file_meta(path: Path) -> tuple[str, str]:
@@ -238,6 +253,11 @@ def add_time_features(panel: pd.DataFrame) -> pd.DataFrame:
     for horizon in HORIZONS:
         future_price = grouped["sale_per_pyeong"].shift(-horizon)
         panel[f"target_growth_{horizon}m"] = future_price / panel["sale_per_pyeong"] - 1
+        panel[f"actual_future_sale_per_pyeong_{horizon}m"] = future_price
+        panel[f"actual_risk_ratio_{horizon}m"] = panel["jeonse_per_pyeong"] / future_price
+        panel[f"actual_risk_label_{horizon}m"] = (
+            panel[f"actual_risk_ratio_{horizon}m"] >= RISK_THRESHOLD
+        ).astype("Int64")
 
     return panel
 
@@ -289,6 +309,33 @@ def build_model(seed: int = 42) -> tuple[Pipeline, Pipeline | None]:
     return lightgbm, catboost
 
 
+def calculate_classification_metrics(
+    valid: pd.DataFrame,
+    actual_future: pd.Series,
+    predicted_future: np.ndarray,
+    horizon: int,
+) -> dict[str, float | int]:
+    y_true = valid[f"actual_risk_label_{horizon}m"].astype(int)
+    y_score = valid["jeonse_per_pyeong"].to_numpy() / predicted_future
+    y_pred = (y_score >= RISK_THRESHOLD).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+    return {
+        "risk_threshold": RISK_THRESHOLD,
+        "risk_positive_count": int(y_true.sum()),
+        "risk_negative_count": int((y_true == 0).sum()),
+        "pr_auc": safe_auc(average_precision_score, y_true, y_score),
+        "roc_auc": safe_auc(roc_auc_score, y_true, y_score),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
+        "confusion_tn": int(tn),
+        "confusion_fp": int(fp),
+        "confusion_fn": int(fn),
+        "confusion_tp": int(tp),
+    }
+
+
 def train_horizon_models(panel: pd.DataFrame, output_dir: Path) -> tuple[list[ModelBundle], pd.DataFrame]:
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics = []
@@ -299,7 +346,7 @@ def train_horizon_models(panel: pd.DataFrame, output_dir: Path) -> tuple[list[Mo
 
     for horizon in HORIZONS:
         target_col = f"target_growth_{horizon}m"
-        train_frame = feature_frame.dropna(subset=[target_col]).copy()
+        train_frame = feature_frame.dropna(subset=[target_col, f"actual_risk_label_{horizon}m"]).copy()
         if train_frame.empty:
             continue
 
@@ -324,19 +371,19 @@ def train_horizon_models(panel: pd.DataFrame, output_dir: Path) -> tuple[list[Mo
 
         ensemble_pred = np.mean(predictions, axis=0)
         actual_future = valid["sale_per_pyeong"] * (1 + y_valid)
-        predicted_future = valid["sale_per_pyeong"] * (1 + ensemble_pred)
+        predicted_future = valid["sale_per_pyeong"].to_numpy() * (1 + ensemble_pred)
 
-        metrics.append(
-            {
-                "horizon_months": horizon,
-                "train_rows": int(len(train)),
-                "valid_rows": int(len(valid)),
-                "growth_mae": float(mean_absolute_error(y_valid, ensemble_pred)),
-                "future_price_mae": float(mean_absolute_error(actual_future, predicted_future)),
-                "future_price_mape": float(mean_absolute_percentage_error(actual_future, predicted_future)),
-                "uses_catboost": catboost is not None,
-            }
-        )
+        row = {
+            "horizon_months": horizon,
+            "train_rows": int(len(train)),
+            "valid_rows": int(len(valid)),
+            "growth_mae": float(mean_absolute_error(y_valid, ensemble_pred)),
+            "future_price_mae": float(mean_absolute_error(actual_future, predicted_future)),
+            "future_price_mape": float(mean_absolute_percentage_error(actual_future, predicted_future)),
+            "uses_catboost": catboost is not None,
+        }
+        row.update(calculate_classification_metrics(valid, actual_future, predicted_future, horizon))
+        metrics.append(row)
 
         bundle = ModelBundle(horizon=horizon, lightgbm=lightgbm, catboost=catboost)
         bundles.append(bundle)
@@ -351,75 +398,44 @@ def train_horizon_models(panel: pd.DataFrame, output_dir: Path) -> tuple[list[Mo
     return bundles, metrics_frame
 
 
-def one_month_growth(bundle: ModelBundle, features: pd.DataFrame) -> np.ndarray:
+def predict_growth(bundle: ModelBundle, features: pd.DataFrame) -> np.ndarray:
     predictions = [bundle.lightgbm.predict(features)]
     if bundle.catboost is not None:
         predictions.append(bundle.catboost.predict(features))
     return np.mean(predictions, axis=0)
 
 
-def forecast_24_months(panel: pd.DataFrame, one_month_bundle: ModelBundle) -> pd.DataFrame:
+def forecast_latest_24_months(panel: pd.DataFrame, model_24m: ModelBundle) -> pd.DataFrame:
     latest_rows = panel.dropna(subset=NUM_COLS).sort_values("month").groupby(GROUP_KEYS).tail(1)
-    forecasts = []
+    features = latest_rows[CAT_COLS + NUM_COLS]
+    growth_24m = predict_growth(model_24m, features)
+    forecast_sale = latest_rows["sale_per_pyeong"].to_numpy() * (1 + growth_24m)
 
-    for idx, row in latest_rows.iterrows():
-        row = row.copy()
-        history = (
-            panel[
-                (panel["dong_name"] == row["dong_name"])
-                & (panel["property_type"] == row["property_type"])
-            ]
-            .sort_values("month")["sale_per_pyeong"]
-            .dropna()
-            .tolist()
-        )
-
-        current_price = float(row["sale_per_pyeong"])
-        for _ in range(1, 25):
-            next_month = row["month"] + pd.DateOffset(months=1)
-            row["month"] = next_month
-            row["month_num"] = next_month.month
-            row["year"] = next_month.year
-
-            for lag in [1, 2, 3, 6, 12]:
-                row[f"sale_lag_{lag}"] = history[-lag] if len(history) >= lag else np.nan
-            row["sale_roll_mean_3"] = np.mean(history[-3:]) if history else np.nan
-            row["sale_roll_mean_6"] = np.mean(history[-6:]) if history else np.nan
-            row["sale_roll_mean_12"] = np.mean(history[-12:]) if history else np.nan
-            row["sale_mom_change"] = (history[-1] / history[-2] - 1) if len(history) >= 2 else 0.0
-            row["sale_per_pyeong"] = current_price
-            row["jeonse_to_sale_ratio"] = row["jeonse_per_pyeong"] / current_price
-
-            feature_row = pd.DataFrame([row[CAT_COLS + NUM_COLS]])
-            if feature_row[NUM_COLS].isna().any(axis=None):
-                break
-
-            growth = float(one_month_growth(one_month_bundle, feature_row)[0])
-            growth = float(np.clip(growth, -0.15, 0.15))
-            current_price = current_price * (1 + growth)
-            history.append(current_price)
-
-        base_row = latest_rows.loc[idx]
-        forecasts.append(
-            {
-                "dong_name": row["dong_name"],
-                "property_type": row["property_type"],
-                "base_month": base_row["month"].strftime("%Y-%m"),
-                "forecast_month": row["month"].strftime("%Y-%m"),
-                "current_sale_per_pyeong": float(base_row["sale_per_pyeong"]),
-                "forecast_sale_per_pyeong_24m": current_price,
-                "current_jeonse_per_pyeong": float(base_row["jeonse_per_pyeong"]),
-                "risk_ratio_24m": float(base_row["jeonse_per_pyeong"] / current_price),
-            }
-        )
-
-    result = pd.DataFrame(forecasts)
+    result = latest_rows[["dong_name", "property_type", "month", "sale_per_pyeong", "jeonse_per_pyeong"]].copy()
+    result["base_month"] = result["month"].dt.strftime("%Y-%m")
+    result["forecast_month"] = (result["month"] + pd.DateOffset(months=24)).dt.strftime("%Y-%m")
+    result["current_sale_per_pyeong"] = result["sale_per_pyeong"]
+    result["forecast_sale_per_pyeong_24m"] = forecast_sale
+    result["current_jeonse_per_pyeong"] = result["jeonse_per_pyeong"]
+    result["risk_ratio_24m"] = result["current_jeonse_per_pyeong"] / result["forecast_sale_per_pyeong_24m"]
     result["risk_level"] = pd.cut(
         result["risk_ratio_24m"],
         bins=[-np.inf, 0.70, 0.80, 0.90, 1.00, np.inf],
         labels=["안전", "주의", "위험", "고위험", "깡통 가능성 매우 높음"],
     )
-    return result.sort_values("risk_ratio_24m", ascending=False)
+
+    keep_cols = [
+        "dong_name",
+        "property_type",
+        "base_month",
+        "forecast_month",
+        "current_sale_per_pyeong",
+        "forecast_sale_per_pyeong_24m",
+        "current_jeonse_per_pyeong",
+        "risk_ratio_24m",
+        "risk_level",
+    ]
+    return result[keep_cols].sort_values("risk_ratio_24m", ascending=False)
 
 
 def run(data_dir: Path = DATA_DIR, output_dir: Path = ARTIFACT_DIR) -> None:
@@ -435,40 +451,28 @@ def run(data_dir: Path = DATA_DIR, output_dir: Path = ARTIFACT_DIR) -> None:
     transactions.to_csv(output_dir / "transactions_normalized.csv", index=False, encoding="utf-8-sig")
     panel.to_csv(output_dir / "monthly_panel.csv", index=False, encoding="utf-8-sig")
 
-    print("[*] Training horizon models (1m, 3m, 6m, 12m)...")
+    print("[*] Training horizon models (1m, 3m, 6m, 12m, 24m)...")
     bundles, metrics = train_horizon_models(panel, output_dir)
     print("[+] Training complete. Metrics saved.")
 
-    print("[*] Generating 24-month forecast and risk assessment...")
-    one_month_bundle = next(bundle for bundle in bundles if bundle.horizon == 1)
-    forecast = forecast_24_months(panel, one_month_bundle)
+    print("[*] Generating latest 24-month forecast and risk assessment...")
+    model_24m = next(bundle for bundle in bundles if bundle.horizon == 24)
+    forecast = forecast_latest_24_months(panel, model_24m)
     forecast.to_csv(output_dir / "can_jeonse_risk_24m.csv", index=False, encoding="utf-8-sig")
     print(f"[+] Forecast complete. Results saved to {output_dir / 'can_jeonse_risk_24m.csv'}")
 
-    print("\n=== Model Metrics ===")
+    print("\n=== Evaluation Metrics ===")
     print(metrics.to_string(index=False))
 
     print("\n=== Top 10 Can-Jeonse Risk Forecasts ===")
-    display_cols = [
-        "dong_name",
-        "property_type",
-        "base_month",
-        "forecast_month",
-        "current_sale_per_pyeong",
-        "forecast_sale_per_pyeong_24m",
-        "current_jeonse_per_pyeong",
-        "risk_ratio_24m",
-        "risk_level",
-    ]
     print(
-        forecast[display_cols]
-        .head(10)
+        forecast.head(10)
         .round(
             {
                 "current_sale_per_pyeong": 2,
                 "forecast_sale_per_pyeong_24m": 2,
                 "current_jeonse_per_pyeong": 2,
-                 "risk_ratio_24m": 3,
+                "risk_ratio_24m": 3,
             }
         )
         .to_string(index=False)
