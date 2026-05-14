@@ -34,7 +34,6 @@ print("파이프라인 준비 중...")
 
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
-from tqdm import tqdm
 
 from langchain_community.document_loaders import PyMuPDFLoader, PyPDFLoader, PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -206,7 +205,7 @@ def load_pdf(filepath: str) -> list:
             loader = PyMuPDFLoader(filepath)
         return loader.load()
     except Exception as e:
-        print(f"  ⚠️  로드 실패 ({os.path.basename(filepath)}): {e}")
+        print(f"  [WARNING] 로드 실패 ({os.path.basename(filepath)}): {e}")
         return []
 
 
@@ -289,7 +288,7 @@ def load_to_db(chunks: list, filepath: str, extra_meta: dict | None = None) -> i
     ]
 
     if not rows:
-        print(f"  ⚠️  유효한 청크 없음: {filename}")
+        print(f"  [WARNING] 유효한 청크 없음: {filename}")
         cur.close()
         conn.close()
         return 0
@@ -309,7 +308,7 @@ def load_to_db(chunks: list, filepath: str, extra_meta: dict | None = None) -> i
         conn.commit()
     except Exception as e:
         conn.rollback()
-        print(f"  ❌ 적재 실패 - 롤백: {e}")
+        print(f"  [ERROR] 적재 실패 - 롤백: {e}")
         return 0
     finally:
         cur.close()
@@ -327,7 +326,7 @@ def run(pdf_dir: str = "docs/pdf"):
     pdf_files  = list(set(pdf_files))
 
     if not pdf_files:
-        print(f"❌ PDF 파일 없음: {pdf_dir}")
+        print(f"[ERROR] PDF 파일 없음: {pdf_dir}")
         return
 
     print(f"=== PDF 파이프라인 v2 시작: 총 {len(pdf_files)}개 파일 ===\n")
@@ -345,7 +344,7 @@ def run(pdf_dir: str = "docs/pdf"):
     skipped_files = 0
     pbar = tqdm(sorted(pdf_files), desc="PDF 파이프라인 v2")
 
-    for filepath in pbar:
+    for i, filepath in enumerate(sorted(pdf_files), 1):
         filename = os.path.basename(filepath)
         pdf_type = classify_pdf(filepath)
         pbar.set_postfix_str(f"{filename[:25]}...")
@@ -373,6 +372,7 @@ def run(pdf_dir: str = "docs/pdf"):
         chunks = split_docs(docs, pdf_type, extra_meta)
         count  = load_to_db(chunks, filepath, extra_meta)
         total_chunks += count
+        print(f"  [SUCCESS] {len(docs)}페이지 -> {count}청크 적재")
 
     print(f"\n=== 완료! ===")
     print(f"  총 청크 적재: {total_chunks}개")

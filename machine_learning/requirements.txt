@@ -1,0 +1,62 @@
+﻿
+# --extra-index-url https://download.pytorch.org/whl/cpu
+
+# =====================
+# Data
+# =====================
+pandas==2.2.3
+numpy==2.2.5
+requests==2.32.5
+beautifulsoup4==4.13.4
+python-dateutil==2.9.0
+PublicDataReader==1.0.3
+pytorch-tabnet==4.1.0
+
+# =====================
+# ML
+# =====================
+scikit-learn==1.6.1
+xgboost==3.2.0
+lightgbm==4.6.0
+catboost==1.2.8
+matplotlib==3.10.1
+seaborn==0.13.2
+joblib==1.4.2
+nbformat>=4.2.0
+jupyter
+
+# =====================
+# RAG / PDF
+# =====================
+langchain==1.2.17
+langchain-community==0.4.1
+langchain-openai==1.2.1
+langchain-pymupdf4llm==0.5.0
+openai==2.36.0
+chromadb==0.6.3
+tiktoken==0.9.0
+pypdf==5.4.0
+pdfplumber==0.11.4
+pymupdf4llm==0.1.9
+
+# =====================
+# DB
+# =====================
+sqlalchemy==2.0.40
+psycopg2-binary==2.9.10
+alembic==1.15.2
+
+# =====================
+# App
+# =====================
+streamlit==1.57.0
+python-dotenv==1.1.0
+tqdm==4.67.3
+plotly>=5.18.0
+
+# =====================
+# Embedding (CPU 전용)
+# =====================
+# torch==2.2.0+cpu
+sentence-transformers==5.1.2
+langchain-huggingface==1.0.1
