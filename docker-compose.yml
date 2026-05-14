@@ -4,6 +4,7 @@ services:
   # PostgreSQL DB 컨테이너
   # =============================================
   db:
+    # pgvector extension is bundled in this image
     image: pgvector/pgvector:pg16
     container_name: jeonse_db
     restart: unless-stopped
@@ -15,6 +16,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./database/00-extensions.sql:/docker-entrypoint-initdb.d/00-extensions.sql:ro
       - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d jeonse_risk"]
