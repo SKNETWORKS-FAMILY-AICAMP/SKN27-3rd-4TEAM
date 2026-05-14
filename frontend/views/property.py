@@ -1,8 +1,8 @@
-﻿"""최근 확인 매물 상세 화면."""
+"""최근 확인 매물 상세 화면."""
 
 import streamlit as st
 
-from utils.components import render_status_pill, risk_row, section_divider
+from utils.components import render_status_pill, risk_row, case_row, section_divider
 from views.history import LEVEL_KO, RECORDS
 
 
@@ -41,6 +41,19 @@ def render():
     with status_col:
         st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
         render_status_pill(status_type, rec["score"], f"{LEVEL_KO[rec['level']]} 매물")
+
+    section_divider()
+
+    # ───── 분석 완료 배너 (AI 안심 상담에서 업로드된 자료 기반) ─────
+    st.markdown(
+        f"""
+        <div style="background:var(--green-soft);border:1px solid #b8ead9;border-radius:12px;
+                    padding:12px 14px;margin-top:4px;font-size:13px;color:#005a3f">
+          ✓ 분석 완료 · <b>{len(detail['risks'])}건 위험 신호</b> 탐지됨 — 아래 진단 결과를 확인하세요
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     section_divider()
 
@@ -98,20 +111,103 @@ def render():
 
     section_divider()
 
-    c1, c2, c3, c4 = st.columns(4)
+    # ───── 나와 비슷한 사례 ─────
+    st.markdown("### 🎯 나와 비슷한 사례 — 종로구 자동 매칭")
+    st.markdown(
+        '<p style="color:var(--gray-500);font-size:13px;margin-top:-8px">'
+        "다세대 · 전세가율 90%+ · 근저당 있음 조건의 실제 피해/구제 사례입니다.</p>",
+        unsafe_allow_html=True,
+    )
+
+    case_row(
+        "'23",
+        "종로",
+        "<b>명륜동 다세대 · 근저당 2.4억</b><br/>"
+        '<span style="color:var(--gray-500);font-size:12px">'
+        "경매 낙찰 1.92억 · 임차인 회수 실패 · HUG 보장 미가입</span>",
+        "회수 0%",
+        "bad",
+    )
+    case_row(
+        "'24",
+        "종로",
+        "<b>혜화동 빌라 · HUG 가입 상태</b><br/>"
+        '<span style="color:var(--gray-500);font-size:12px">'
+        "임대인 파산 · HUG가 보증금 전액 대위변제 · 평균 소요 4.2개월</span>",
+        "회수 100%",
+        "good",
+    )
+    case_row(
+        "'24",
+        "종로",
+        "<b>익선동 오피스텔 · 임차권등기</b><br/>"
+        '<span style="color:var(--gray-500);font-size:12px">'
+        "동일 패턴 · 임차권등기 + 단독 경매 신청으로 68% 회수 (14개월)</span>",
+        "회수 68%",
+        "partial",
+    )
+
+    st.markdown(
+        """
+        <div style="background:var(--gray-100);border-radius:14px;padding:16px;margin-top:8px">
+          <div style="font-size:11px;font-weight:800;color:var(--gray-500);letter-spacing:.06em;margin-bottom:10px">
+            동일 조건 47건 판례 평균
+          </div>
+          <div class="stat-row"><span>평균 회수율</span><b>43%</b></div>
+          <div class="stat-row"><span>평균 소요 기간</span><b>13.8개월</b></div>
+          <div class="stat-row"><span>HUG 가입 시 회수율</span><b style="color:var(--green)">100%<span class="delta">+57%p</span></b></div>
+          <div class="stat-row"><span>임차권등기 시 회수율</span><b style="color:var(--green)">81%<span class="delta">+38%p</span></b></div>
+          <div style="font-size:11px;color:var(--gray-500);margin-top:8px">
+            근거: 대법원 판결문 + HUG 대위변제 공개 데이터 (2022–2025)
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    section_divider()
+
+    c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("← 진단 기록", use_container_width=True):
             st.session_state.current_view = "history"
             st.rerun()
     with c2:
         if st.button("💬 챗봇에서 질문", use_container_width=True, type="primary"):
+            # 매물 컨텍스트 설정 (문서 컨텍스트는 해제 — 상호 배타)
+            st.session_state.chat_context_property = {
+                "id": rec["id"],
+                "addr": rec["addr"],
+                "deposit": rec["deposit"],
+                "area": rec["area"],
+                "year": rec["year"],
+                "score": rec["score"],
+                "level": rec["level"],
+                "ratio": rec["ratio"],
+                "senior": rec["senior"],
+                "hug": rec["hug"],
+                "tags": rec["tags"],
+                "risks": [list(r) for r in detail["risks"]],
+                "building": detail["building"],
+                "sale": detail["sale"],
+            }
+            st.session_state.pop("chat_context_doc", None)
+            # 매물 기반 인삿말로 메시지 초기화
+            risk_titles = " · ".join(r[0] for r in detail["risks"][:3])
+            st.session_state.messages = [{
+                "role": "assistant",
+                "content": (
+                    f"🏠 <b>{rec['addr']}</b> 매물에 대한 상담을 시작합니다.<br/><br/>"
+                    f"진단 결과: <b>위험도 {rec['score']}점 ({LEVEL_KO[rec['level']]})</b> · "
+                    f"전세가율 <b>{rec['ratio']}</b> · 보증보험 <b>{rec['hug']}</b><br/><br/>"
+                    f"주요 위험 신호: {risk_titles}<br/><br/>"
+                    "이 매물에 대해 무엇을 알고 싶으신가요?"
+                ),
+                "sources": [f"📋 매물 진단 #{rec['id']:03d}", f"⚠️ 위험 신호 {len(detail['risks'])}건"],
+            }]
             st.session_state.current_view = "chat"
             st.rerun()
     with c3:
         if st.button("✅ 체크리스트", use_container_width=True):
             st.session_state.current_view = "checklist"
-            st.rerun()
-    with c4:
-        if st.button("📊 시뮬레이션", use_container_width=True):
-            st.session_state.current_view = "simulator"
             st.rerun()

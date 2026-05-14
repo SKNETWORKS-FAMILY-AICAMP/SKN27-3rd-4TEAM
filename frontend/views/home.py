@@ -1,154 +1,387 @@
-"""대시보드형 홈 화면."""
+"""Public landing home for the lease fraud diagnosis service."""
+
+from textwrap import dedent
 
 import streamlit as st
 
 
-def _go(view: str):
-    st.session_state.current_view = view
-    st.query_params.clear()
-    st.rerun()
+def _home_css() -> str:
+    return """
+    <style>
+      section[data-testid="stSidebar"],
+      div[data-testid="stSidebarCollapsedControl"] {
+        display: none !important;
+      }
+      .stApp {
+        background: #ffffff;
+      }
+      .block-container {
+        max-width: 100% !important;
+        padding: 0 !important;
+      }
+      .home-shell {
+        color: #111827;
+        background: #ffffff;
+      }
+      .home-visual {
+        min-height: 532px;
+        padding: 62px 28px 58px;
+        background: linear-gradient(180deg, #eef6ff 0%, #ffffff 82%);
+        border-bottom: 1px solid #e5e8eb;
+        text-align: center;
+      }
+      .home-inner {
+        width: min(1324px, calc(100vw - 56px));
+        margin: 0 auto;
+      }
+      .home-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 8px 17px;
+        border: 1px solid #b9d5ff;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, .72);
+        color: #2563eb;
+        font-size: 13px;
+        font-weight: 800;
+      }
+      .home-badge span {
+        font-size: 15px;
+      }
+      .home-title {
+        margin: 24px auto 0;
+        max-width: 640px;
+        font-size: 42px;
+        line-height: 1.25;
+        letter-spacing: 0;
+        font-weight: 900;
+      }
+      .home-desc {
+        margin: 21px auto 0;
+        max-width: 570px;
+        color: #64748b;
+        font-size: 16px;
+        line-height: 1.72;
+        font-weight: 600;
+      }
+      .home-primary-cta {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 51px;
+        margin-top: 32px;
+        border-radius: 12px;
+        background: #3182f6;
+        color: #ffffff !important;
+        text-decoration: none !important;
+        font-size: 15px;
+        font-weight: 900;
+        transition: background .15s ease, transform .15s ease;
+      }
+      .home-primary-cta:hover {
+        background: #1b64da;
+        transform: translateY(-1px);
+      }
+      .home-secondary-cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 160px;
+        height: 43px;
+        margin-top: 12px;
+        border: 1px solid #d1d6db;
+        border-radius: 11px;
+        background: #ffffff;
+        color: #111827 !important;
+        text-decoration: none !important;
+        font-size: 14px;
+        font-weight: 800;
+      }
+      .home-trust {
+        display: flex;
+        justify-content: center;
+        gap: 25px;
+        margin-top: 29px;
+        color: #8b95a1;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .home-steps-wrap {
+        padding: 58px 28px 48px;
+      }
+      .home-section-title {
+        margin: 0 0 34px;
+        text-align: center;
+        font-size: 26px;
+        line-height: 1.25;
+        font-weight: 900;
+        letter-spacing: 0;
+      }
+      .home-step-grid,
+      .home-card-grid {
+        display: grid;
+        gap: 20px;
+        margin: 0 auto;
+      }
+      .home-step-grid {
+        max-width: 990px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .home-step-card {
+        min-height: 188px;
+        padding: 27px 24px;
+        border: 1px solid #e0e6ed;
+        border-radius: 14px;
+        background: #ffffff;
+      }
+      .home-num {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: #3182f6;
+        color: #ffffff;
+        font-size: 17px;
+        font-weight: 900;
+      }
+      .home-card-title {
+        margin: 18px 0 8px;
+        color: #0f172a;
+        font-size: 18px;
+        line-height: 1.35;
+        font-weight: 900;
+        letter-spacing: 0;
+      }
+      .home-card-copy {
+        margin: 0;
+        color: #64748b;
+        font-size: 14px;
+        line-height: 1.75;
+        font-weight: 600;
+      }
+      .home-actions-wrap {
+        padding: 15px 28px 24px;
+      }
+      .home-card-grid {
+        max-width: 754px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .home-action-card {
+        display: block;
+        min-height: 203px;
+        padding: 24px;
+        border: 1px solid #e0e6ed;
+        border-radius: 14px;
+        background: #ffffff;
+        color: inherit !important;
+        text-decoration: none !important;
+        transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+      }
+      .home-action-card:hover {
+        border-color: #b9d5ff;
+        box-shadow: 0 14px 30px rgba(15, 23, 42, .08);
+        transform: translateY(-2px);
+      }
+      .home-icon {
+        display: grid;
+        place-items: center;
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        background: #eef6ff;
+        font-size: 22px;
+      }
+      .home-icon.green {
+        background: #edf9f4;
+      }
+      .home-icon.red {
+        background: #ffeded;
+      }
+      .home-action {
+        margin-top: 17px;
+        color: #2563eb;
+        font-size: 14px;
+        font-weight: 900;
+      }
+      .home-action.red {
+        color: #f04452;
+      }
+      .home-stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px;
+        max-width: 690px;
+        margin: 56px auto 0;
+        padding: 34px 28px;
+        border-radius: 16px;
+        background: #f2f4f6;
+      }
+      .home-stat b {
+        display: block;
+        color: #3182f6;
+        font-size: 28px;
+        line-height: 1.1;
+        font-weight: 900;
+      }
+      .home-stat span {
+        display: block;
+        margin-top: 14px;
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .home-notice {
+        margin: 39px auto 0;
+        max-width: 650px;
+        color: #8b95a1;
+        text-align: center;
+        font-size: 12px;
+        line-height: 1.7;
+        font-weight: 700;
+      }
+      .home-footer {
+        margin-top: 36px;
+        padding: 16px 20px;
+        background: #f8fafc;
+        border-top: 1px solid #e5e8eb;
+        color: #8b95a1;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      @media (max-width: 900px) {
+        .home-inner {
+          width: min(100% - 32px, 720px);
+        }
+        .home-visual {
+          min-height: auto;
+          padding: 42px 16px;
+        }
+        .home-title {
+          font-size: 34px;
+        }
+        .home-step-grid,
+        .home-card-grid,
+        .home-stats {
+          grid-template-columns: 1fr;
+        }
+        .home-trust {
+          flex-wrap: wrap;
+          gap: 10px 18px;
+        }
+      }
+    </style>
+    """
 
 
 def render():
+    st.markdown(_home_css(), unsafe_allow_html=True)
     st.markdown(
-        """
-        <div class="home-hero">
-          <div>
-            <div class="eyebrow">안전한 부동산 거래를 위한 AI 분석</div>
-            <h1>내 전세 계약, 위험 신호부터 주변 시세까지 한 번에 확인하세요</h1>
-            <p>현재 매물의 위험도와 주변 보증금 흐름, 계약 전 체크리스트를 대시보드에서 이어서 점검합니다.</p>
-          </div>
-          <div class="home-hero-card">
-            <span>현재 분석 매물</span>
-            <b>명륜2가 한빛빌라 302호</b>
-            <small>전세 ₩2.5억 · 전세가율 91% · 위험 78점</small>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    metrics = [
-        ("총 거래 건수", "3,245건", "전월 대비 +12.4%", "blue"),
-        ("평균 전세 보증금", "2.68억원", "전월 대비 +5.7%", "green"),
-        ("평균 면적", "57.3㎡", "전월 대비 -1.3%", "violet"),
-        ("거래 연도", "2025년 5월", "데이터 기준", "orange"),
-    ]
-    for col, (label, value, delta, tone) in zip((c1, c2, c3, c4), metrics):
-        with col:
-            st.markdown(
-                f"""
-                <div class="dash-metric {tone}">
-                  <span>{label}</span>
-                  <b>{value}</b>
-                  <small>{delta}</small>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
-
-    map_col, side_col = st.columns([1.75, 1])
-    with map_col:
-        st.markdown(
+        dedent(
             """
-            <div class="dash-panel">
-              <div class="panel-head"><b>종로구 동별 평당 보증금 지도</b><span>최근 거래 기준</span></div>
-              <div class="price-map">
-                <div class="map-title-chip">종로구 주요 동 평당 보증금</div>
-                <div class="map-price-pin cool" style="left:14%;top:31%">
-                  <div class="dot"></div><div class="label"><b>부암동</b><span>1,480만원/평</span></div>
-                </div>
-                <div class="map-price-pin cool" style="left:30%;top:53%">
-                  <div class="dot"></div><div class="label"><b>무악동</b><span>1,655만원/평</span></div>
-                </div>
-                <div class="map-price-pin warm" style="left:45%;top:38%">
-                  <div class="dot"></div><div class="label"><b>교남동</b><span>1,725만원/평</span></div>
-                </div>
-                <div class="map-price-pin hot active" style="left:60%;top:27%">
-                  <div class="dot"></div><div class="label"><b>평창동</b><span>1,950만원/평</span></div>
-                </div>
-                <div class="map-price-pin warm" style="left:61%;top:60%">
-                  <div class="dot"></div><div class="label"><b>삼청동</b><span>1,785만원/평</span></div>
-                </div>
-                <div class="map-price-pin cool" style="left:78%;top:46%">
-                  <div class="dot"></div><div class="label"><b>혜화동</b><span>1,670만원/평</span></div>
-                </div>
-                <div class="current-property-pin">현재 매물</div>
-                <div class="map-watermark">JONGNO PRICE MAP</div>
+        <div class="home-shell">
+          <div class="home-visual">
+            <div class="home-inner">
+              <div class="home-badge"><span></span> 서울 종로구 · 전세사기 진단 서비스</div>
+              <div class="home-title">계약하기 전에<br />먼저 안전한지 확인하세요</div>
+              <div class="home-desc">
+                등기부등본과 계약서를 올리면, AI가 종로구 실거래가 1,160건과
+                판례 157건을 근거로 위험을 진단해 드립니다.
+              </div>
+              <a class="home-primary-cta" href="?view=chat" target="_self">자료 올리고 진단 시작 →</a>
+              <div class="home-trust">
+                <span>✓ 무료</span>
+                <span>✓ 1분 진단</span>
+                <span>✓ 자료는 저장되지 않음</span>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+          </div>
 
-    with side_col:
-        st.markdown(
-            """
-            <div class="dash-panel selected-region">
-              <div class="panel-head"><b>평창동</b><span>선택 지역</span></div>
-              <div class="mini-stat"><span>평균 평당 보증금</span><b class="red">1,950만원</b></div>
-              <div class="mini-stat"><span>거래 건수</span><b>318건</b></div>
-              <div class="mini-stat"><span>평균 면적</span><b>60.2㎡</b></div>
-              <div class="mini-stat"><span>주요 매물 유형</span><b>아파트·연립</b></div>
+          <div class="home-steps-wrap">
+            <div class="home-inner">
+              <div class="home-section-title">3단계로 끝나요</div>
+              <div class="home-step-grid">
+                <div class="home-step-card">
+                  <div class="home-num">1</div>
+                  <div class="home-card-title">자료 업로드</div>
+                  <div class="home-card-copy">등기부등본 PDF, 계약서 사진, 또는 주소만 입력해도 됩니다.</div>
+                </div>
+                <div class="home-step-card">
+                  <div class="home-num">2</div>
+                  <div class="home-card-title">AI 자동 분석</div>
+                  <div class="home-card-copy">전세가율·근저당·신탁등기 등 15가지 위험 항목을 자동 점검.</div>
+                </div>
+                <div class="home-step-card">
+                  <div class="home-num">3</div>
+                  <div class="home-card-title">맞춤 대응 안내</div>
+                  <div class="home-card-copy">비슷한 사례의 회수율과 다음에 해야 할 일을 알려드립니다.</div>
+                </div>
+              </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+          </div>
 
-    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+          <div class="home-actions-wrap">
+            <div class="home-inner">
+              <div class="home-card-grid">
+                <a class="home-action-card" href="?view=chat" target="_self">
+                  <div class="home-icon">🧠</div>
+                  <div class="home-card-title">지금 매물 진단하기</div>
+                  <div class="home-card-copy">등기부·계약서를 올리고 위험도 분석</div>
+                  <div class="home-action">시작 →</div>
+                </a>
+                <a class="home-action-card" href="?view=cases" target="_self">
+                  <div class="home-icon">⚖️</div>
+                  <div class="home-card-title">사례·판례 플레이북</div>
+                  <div class="home-card-copy">상황별 단계별 대응 가이드</div>
+                  <div class="home-action">보기 →</div>
+                </a>
+                <a class="home-action-card" href="?view=checklist" target="_self">
+                  <div class="home-icon green">✅</div>
+                  <div class="home-card-title">안전 체크리스트</div>
+                  <div class="home-card-copy">계약 전 19가지 확인 항목</div>
+                  <div class="home-action">체크 →</div>
+                </a>
+                <a class="home-action-card" href="?view=playbook" target="_self">
+                  <div class="home-icon red">🛡️</div>
+                  <div class="home-card-title">이미 피해를 입었다면</div>
+                  <div class="home-card-copy">신고 창구 · 진행 순서 안내</div>
+                  <div class="home-action red">바로가기 →</div>
+                </a>
+                <a class="home-action-card" href="?view=history" target="_self">
+                  <div class="home-icon">📋</div>
+                  <div class="home-card-title">내 진단 기록</div>
+                  <div class="home-card-copy">이전에 검토한 매물 비교</div>
+                  <div class="home-action">보기 →</div>
+                </a>
+                <a class="home-action-card" href="?view=market" target="_self">
+                  <div class="home-icon">📊</div>
+                  <div class="home-card-title">지역 시세 확인하기</div>
+                  <div class="home-card-copy">전세가율 · 경매가 비교</div>
+                  <div class="home-action">확인 →</div>
+                </a>
+              </div>
 
-    q1, q2, q3 = st.columns(3)
-    with q1:
-        if st.button("🗺️ 지역별 시세", use_container_width=True, type="primary"):
-            _go("market")
-    with q2:
-        if st.button("🤖 챗봇", use_container_width=True):
-            _go("chat")
-    with q3:
-        if st.button("📋 계약 체크리스트", use_container_width=True):
-            _go("checklist")
+              <div class="home-stats">
+                <div class="home-stat"><b>1,160건</b><span>종로구 2025 전세 실거래가</span></div>
+                <div class="home-stat"><b>157건</b><span>대법원·하급심 판례 분석</span></div>
+                <div class="home-stat"><b>47건</b><span>HUG 대위변제 공개 데이터</span></div>
+                <div class="home-stat"><b>2026.3.1</b><span>최신 주임법 개정 반영</span></div>
+              </div>
 
-    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+              <div class="home-notice">
 
-    b1, b2, b3 = st.columns([1.2, 1, 1])
-    with b1:
-        st.markdown(
-            """
-            <div class="dash-panel">
-              <div class="panel-head"><b>확인 우선순위</b><span>계약 전</span></div>
-              <div class="rank-row"><b>1</b><span>근저당 말소 특약 확인</span><em>치명</em></div>
-              <div class="rank-row"><b>2</b><span>HUG 가입 가능 여부 조회</span><em>높음</em></div>
-              <div class="rank-row"><b>3</b><span>주변 동일 면적 시세 비교</span><em>필수</em></div>
+              </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with b2:
-        st.markdown(
-            """
-            <div class="dash-panel">
-              <div class="panel-head"><b>동별 평당 보증금 TOP 5</b><span>만원/평</span></div>
-              <div class="bar-row"><span>평창동</span><i style="width:92%"></i><b>1,950</b></div>
-              <div class="bar-row"><span>이화동</span><i style="width:83%"></i><b>1,835</b></div>
-              <div class="bar-row"><span>삼청동</span><i style="width:77%"></i><b>1,785</b></div>
-              <div class="bar-row"><span>가회동</span><i style="width:68%"></i><b>1,720</b></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with b3:
-        st.markdown(
-            """
-            <div class="dash-panel">
-              <div class="panel-head"><b>주요 매물 유형</b><span>전체</span></div>
-              <div class="donut"></div>
-              <div class="legend-row"><span style="background:#3182f6"></span>아파트 48.6%</div>
-              <div class="legend-row"><span style="background:#20c7bd"></span>연립·다세대 26.7%</div>
-              <div class="legend-row"><span style="background:#ff9f43"></span>오피스텔 15.3%</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+          </div>
+
+          <div class="home-footer">
+          업로드 자료는 분석 후 즉시 폐기됩니다 · 본 분석은 참고용이며 최종 계약 전 공인중개사·법률 전문가 상담을 권장합니다.
+          </div>
+        </div>
+        """
+        ).replace("\n", ""),
+        unsafe_allow_html=True,
+    )

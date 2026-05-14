@@ -6,8 +6,8 @@
 ## 실행
 
 ```bash
-cd frontend
-pip install -r ..\requirements.txt
+cd streamlit_app
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
@@ -16,7 +16,7 @@ streamlit run app.py
 ## 구조
 
 ```
-frontend/
+streamlit_app/
 ├─ app.py                 # 메인 라우터 + 사이드바 + 공통 CSS
 ├─ views/
 │  ├─ chat.py             # 상담 챗 (메인) — 진단 결과 + RAG 챗봇

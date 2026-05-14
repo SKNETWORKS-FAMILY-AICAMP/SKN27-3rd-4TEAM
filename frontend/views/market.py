@@ -106,7 +106,7 @@ def render():
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="filter-shell">', unsafe_allow_html=True)
+    # 시도 / 시군구 / 동 셀렉터
     c1, c2, c3 = st.columns(3)
     sido = c1.selectbox("시도", list(REGION_DATA.keys()), key="market_sido")
     sigungu_options = list(REGION_DATA[sido].keys())
@@ -117,7 +117,6 @@ def render():
     if st.session_state.get("market_dong") not in dong_options:
         st.session_state.market_dong = dong_options[0]
     dong = c3.selectbox("동", dong_options, key="market_dong")
-    st.markdown("</div>", unsafe_allow_html=True)
 
     dongs = REGION_DATA[sido][sigungu]
     selected = dongs[dong]
@@ -145,7 +144,6 @@ def render():
 
     map_col, info_col = st.columns([1.75, 1])
     with map_col:
-        st.markdown('<div class="dash-panel map-panel">', unsafe_allow_html=True)
         st.markdown(_render_map(sigungu, dongs, dong), unsafe_allow_html=True)
         st.markdown(
             """
@@ -158,7 +156,6 @@ def render():
             """,
             unsafe_allow_html=True,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
 
     with info_col:
         st.markdown(
@@ -208,6 +205,3 @@ def render():
             """,
             unsafe_allow_html=True,
         )
-
-
-

@@ -1,4 +1,4 @@
-﻿"""사례·판례 플레이북 — 상황별 대응 가이드 + 변호사 상담 키트."""
+"""사례·판례 플레이북 — 상황별 대응 가이드 + 변호사 상담 키트."""
 
 import streamlit as st
 
@@ -157,7 +157,7 @@ def render():
         unsafe_allow_html=True,
     )
 
-    # 카드 그리드 (3열)
+    # 카드 그리드 (3열) — 원본 HTML 카드 디자인 + 투명 st.button 을 CSS Grid 로 stack
     if "selected_pb" not in st.session_state:
         st.session_state.selected_pb = "ghost"
 
@@ -165,13 +165,21 @@ def render():
         cols = st.columns(3)
         for i, pb in enumerate(PLAYBOOKS[row_start:row_start + 3]):
             with cols[i]:
+                is_sel = st.session_state.selected_pb == pb["id"]
+                sel_cls = "is-selected" if is_sel else ""
                 tl_html = "".join(
                     f'<div class="t"><span class="dot"></span><span><b>{when}</b> {what}</span></div>'
                     for when, what in pb["tl"]
                 )
+                # Stack marker — 컬럼 내부 vertical-block 을 grid stack 으로 전환
+                st.markdown(
+                    '<span class="pb-stack-marker" style="display:none"></span>',
+                    unsafe_allow_html=True,
+                )
+                # 원본 카드 디자인 (HTML)
                 st.markdown(
                     f"""
-                    <div class="pb-card">
+                    <div class="pb-card {sel_cls}">
                       <span class="urg {pb['urg']}">{pb['urg_label']}</span>
                       <h4>{pb['title']}</h4>
                       <p>{pb['desc']}</p>
@@ -181,19 +189,49 @@ def render():
                     """,
                     unsafe_allow_html=True,
                 )
-                if st.button(f"자세히 보기 →", key=f"pb_{pb['id']}", use_container_width=True):
+                # 투명 클릭 영역 — 카드 위에 stack 됨
+                if st.button(" ", key=f"pb_{pb['id']}", use_container_width=True):
                     st.session_state.selected_pb = pb["id"]
                     st.rerun()
 
         st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
 
-    # ───── 상세 (현재는 ghost만) ─────
-    if st.session_state.selected_pb == "ghost":
+    # ───── 상세 ─────
+    selected = next((p for p in PLAYBOOKS if p["id"] == st.session_state.selected_pb), None)
+
+    if selected and selected["id"] != "ghost":
         st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="tw-card" style="padding:32px">',
+            f'<span class="pb-card" style="display:inline-block;padding:4px 12px"><span class="urg {selected["urg"]}">{selected["urg_label"]}</span></span>',
             unsafe_allow_html=True,
         )
+        st.markdown(f"## {selected['title']}")
+        st.markdown(
+            f'<p style="color:var(--gray-700);font-size:14px;line-height:1.7">{selected["desc"]}</p>',
+            unsafe_allow_html=True,
+        )
+        for n, (when, what) in enumerate(selected["tl"], start=1):
+            st.markdown(
+                f"""
+                <div style="display:flex;gap:18px;padding:18px;border-radius:14px;
+                            background:var(--gray-100);margin-bottom:10px">
+                  <div style="width:36px;height:36px;border-radius:50%;background:var(--blue);color:#fff;
+                              display:grid;place-items:center;font-weight:800;flex-shrink:0">{n}</div>
+                  <div>
+                    <div style="font-size:11px;font-weight:800;color:var(--blue);letter-spacing:.06em">{when}</div>
+                    <h5 style="margin:4px 0 4px;font-size:16px;font-weight:800;color:var(--gray-900)">{what}</h5>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            f'<div style="font-size:12px;color:var(--gray-500);margin-top:4px">📚 {selected["stats"]} — 사례·판례 검색에서 관련 자료를 확인할 수 있어요.</div>',
+            unsafe_allow_html=True,
+        )
+
+    if st.session_state.selected_pb == "ghost":
+        st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
         st.markdown(
             '<span class="pb-card" style="display:inline-block;padding:4px 12px"><span class="urg now">긴급 · 지금 당장</span></span>',
             unsafe_allow_html=True,
@@ -231,8 +269,6 @@ def render():
                 unsafe_allow_html=True,
             )
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
     # ───── 변호사 상담 키트 ─────
     st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
     st.markdown("### 📋 변호사 상담 준비 키트")
@@ -244,29 +280,19 @@ def render():
     )
 
     cols = st.columns(2)
-    for i, (title, desc, done) in enumerate(LAWYER_KIT):
+    for i, (title, desc, _done) in enumerate(LAWYER_KIT):
         with cols[i % 2]:
-            done_cls = "done" if done else ""
-            check = "✓" if done else ""
             st.markdown(
                 f"""
-                <div class="chk-item {done_cls}">
-                  <div class="chk-icon">{check}</div>
-                  <div>
-                    <div class="title">{title}</div>
-                    <div class="desc">{desc}</div>
-                  </div>
+                <div class="kit-row">
+                  <div class="kit-title">{title}</div>
+                  <div class="kit-desc">{desc}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
     st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
-    c1, c2, _ = st.columns([1.4, 1.4, 3])
-    with c1:
-        st.button("대한법률구조공단 무료 상담 (132)", type="primary", use_container_width=True)
-    with c2:
-        st.button("자료 자동 정리 PDF", use_container_width=True)
 
 
 # ---- 나와 비슷한 사례 검색 페이지 ----
@@ -278,11 +304,11 @@ import streamlit as st
 
 
 BASE_DOCUMENTS = [
-    {"kind": "피해 사례", "title": "전세사기 피해예방 종합안내서", "summary": "계약 전 등기부, 보증보험, 임대인 세금 체납 확인 절차를 정리한 안내 문서입니다.", "keywords": ["전세사기", "예방", "체크리스트", "보증보험", "등기부"]},
-    {"kind": "피해 사례", "title": "경기도 전세피해 사례집", "summary": "보증금 미반환, 깡통전세, 다가구 선순위 권리 문제를 실제 사례 중심으로 정리했습니다.", "keywords": ["보증금", "미반환", "깡통전세", "다가구", "선순위"]},
-    {"kind": "판례", "title": "대법원 2022다48327", "summary": "임차권등기명령과 우선변제권 유지 시점을 다룬 판례입니다.", "keywords": ["임차권등기", "우선변제", "보증금", "대항력"]},
-    {"kind": "판례", "title": "신탁등기 임대차 분쟁 사례", "summary": "수탁자 동의 없는 임대차계약의 위험과 신탁원부 확인 필요성을 다룹니다.", "keywords": ["신탁", "수탁자", "동의서", "계약무효"]},
-    {"kind": "특약", "title": "근저당 말소 조건부 특약 예시", "summary": "잔금일까지 선순위 근저당을 말소하지 않을 경우 계약 해제와 보증금 반환을 명확히 하는 문구입니다.", "keywords": ["근저당", "특약", "말소", "선순위"]},
+    {"kind": "피해 사례", "title": "전세사기 피해예방 종합안내서", "summary": "계약 전 등기부, 보증보험, 임대인 세금 체납 확인 절차를 정리한 안내 문서입니다.", "keywords": ["전세사기", "예방", "체크리스트", "보증보험", "등기부"], "source": "국토교통부", "pages": 18, "updated": "2024-05-10"},
+    {"kind": "피해 사례", "title": "경기도 전세피해 사례집", "summary": "보증금 미반환, 깡통전세, 다가구 선순위 권리 문제를 실제 사례 중심으로 정리했습니다.", "keywords": ["보증금", "미반환", "깡통전세", "다가구", "선순위"], "source": "경기도청", "pages": 32, "updated": "2024-05-09"},
+    {"kind": "판례", "title": "대법원 2022다48327", "summary": "임차권등기명령과 우선변제권 유지 시점을 다룬 판례입니다.", "keywords": ["임차권등기", "우선변제", "보증금", "대항력"], "source": "대법원", "pages": 7, "updated": "2024-05-08"},
+    {"kind": "판례", "title": "신탁등기 임대차 분쟁 사례", "summary": "수탁자 동의 없는 임대차계약의 위험과 신탁원부 확인 필요성을 다룹니다.", "keywords": ["신탁", "수탁자", "동의서", "계약무효"], "source": "법무부", "pages": 12, "updated": "2024-04-30"},
+    {"kind": "특약", "title": "근저당 말소 조건부 특약 예시", "summary": "잔금일까지 선순위 근저당을 말소하지 않을 경우 계약 해제와 보증금 반환을 명확히 하는 문구입니다.", "keywords": ["근저당", "특약", "말소", "선순위"], "source": "변호사협회", "pages": 4, "updated": "2024-04-22"},
 ]
 
 
@@ -356,22 +382,123 @@ def render_cases():
         st.info("검색 결과가 없습니다. '보증금', '근저당', '신탁', '임차권등기'처럼 핵심 단어로 다시 검색해보세요.")
         return
 
-    for score, doc in results[:24]:
+    if "preview_doc_key" not in st.session_state:
+        st.session_state.preview_doc_key = None
+
+    for idx, (score, doc) in enumerate(results[:24]):
+        doc_key = f"doc_{idx}_{abs(hash(doc['title'])) % 100000}"
         keywords = "".join(
             f'<span style="background:var(--gray-100);padding:4px 9px;border-radius:999px;font-size:11px;color:var(--gray-700);margin-right:5px">#{kw}</span>'
             for kw in doc.get("keywords", [])[:6]
         )
-        path_html = f'<div class="case-path">{doc["path"]}</div>' if doc.get("path") else ""
-        st.markdown(
-            f"""
-            <div class="case-doc-card">
-              <div class="case-kind">{doc['kind']}</div>
-              <h3>{doc['title']}</h3>
-              <p>{doc['summary']}</p>
-              <div>{keywords}</div>
-              {path_html}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+
+        meta_parts = []
+        if doc.get("source"):
+            meta_parts.append(f'<span style="display:inline-flex;align-items:center;gap:5px"><span style="color:var(--gray-400)">📄</span>출처: {doc["source"]}</span>')
+        if doc.get("pages"):
+            meta_parts.append(f'<span style="display:inline-flex;align-items:center;gap:5px"><span style="color:var(--gray-400)">📑</span>페이지 수: {doc["pages"]}p</span>')
+        if doc.get("updated"):
+            meta_parts.append(f'<span style="display:inline-flex;align-items:center;gap:5px"><span style="color:var(--gray-400)">📅</span>업데이트: {doc["updated"]}</span>')
+        meta_html = ""
+        if meta_parts:
+            meta_html = (
+                '<div style="margin-top:14px;padding-top:12px;padding-bottom:10px;'
+                'border-top:1px solid var(--gray-100);'
+                'display:flex;flex-wrap:wrap;gap:18px;color:var(--gray-500);font-size:12px;font-weight:700">'
+                + ''.join(meta_parts)
+                + '</div>'
+            )
+        path_html = f'<div style="margin-top:8px;color:var(--gray-400);font-size:11px;word-break:break-all">{doc["path"]}</div>' if doc.get("path") else ""
+
+        with st.container(border=True):
+            card_col, btn_col = st.columns([3, 1])
+
+            with card_col:
+                st.markdown(
+                    f"""
+                    <div>
+                      <span style="display:inline-flex;align-items:center;background:var(--blue-soft);color:var(--blue);
+                                   border-radius:999px;padding:5px 12px;font-size:11px;font-weight:900;margin-bottom:10px">
+                        {doc['kind']}
+                      </span>
+                      <h3 style="margin:6px 0 8px;font-size:18px;line-height:1.35;font-weight:900;color:var(--gray-900)">{doc['title']}</h3>
+                      <p style="color:var(--gray-700);font-size:13px;line-height:1.65;margin:0 0 12px">{doc['summary']}</p>
+                      <div>{keywords}</div>
+                      {meta_html}
+                      {path_html}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            with btn_col:
+                st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+
+                # 미리보기 토글
+                if st.button("👁 미리보기", key=f"prev_{doc_key}", use_container_width=True):
+                    st.session_state.preview_doc_key = (
+                        None if st.session_state.preview_doc_key == doc_key else doc_key
+                    )
+                    st.rerun()
+
+                # PDF 다운로드 (path 존재 시 실제 파일, 아니면 비활성)
+                pdf_path = doc.get("path")
+                if pdf_path and Path(pdf_path).exists():
+                    try:
+                        with open(pdf_path, "rb") as f:
+                            pdf_bytes = f.read()
+                        st.download_button(
+                            "⬇ PDF 다운로드",
+                            data=pdf_bytes,
+                            file_name=Path(pdf_path).name,
+                            mime="application/pdf",
+                            key=f"dl_{doc_key}",
+                            use_container_width=True,
+                        )
+                    except OSError:
+                        st.button("⬇ PDF 다운로드", key=f"dl_{doc_key}", use_container_width=True, disabled=True)
+                else:
+                    st.button("⬇ PDF 다운로드", key=f"dl_{doc_key}", use_container_width=True, disabled=True)
+
+                # 이 문서로 챗봇 대화
+                if st.button("💬 이 문서로 챗봇 대화", key=f"chat_{doc_key}", type="primary", use_container_width=True):
+                    st.session_state.chat_context_doc = {
+                        "title": doc["title"],
+                        "kind": doc["kind"],
+                        "summary": doc["summary"],
+                        "keywords": doc.get("keywords", []),
+                        "path": doc.get("path"),
+                    }
+                    st.session_state.pop("chat_context_property", None)
+                    # 새 대화 시작용으로 기존 메시지 초기화
+                    st.session_state.messages = [{
+                        "role": "assistant",
+                        "content": (
+                            f"📎 <b>{doc['title']}</b> ({doc['kind']}) 문서를 분석 자료로 불러왔습니다.<br/><br/>"
+                            f"{doc['summary']}<br/><br/>"
+                            "이 문서에 대해 궁금한 점을 물어보세요. (예: 핵심 요지, 인용 가능한 조항, 내 매물과의 관련성)"
+                        ),
+                        "sources": [f"📄 {doc['title']}"],
+                    }]
+                    st.session_state.current_view = "chat"
+                    st.query_params.clear()
+                    st.rerun()
+
+        # 미리보기 펼침 영역 (카드 바깥, 아래쪽)
+        if st.session_state.preview_doc_key == doc_key:
+            st.markdown(
+                f"""
+                <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:12px;
+                            padding:16px 18px;margin:-6px 0 12px;font-size:13px;color:var(--gray-700);line-height:1.7">
+                  <div style="font-size:11px;font-weight:800;color:var(--blue);letter-spacing:.06em;margin-bottom:6px">미리보기</div>
+                  <b style="color:var(--gray-900);font-size:14px">{doc['title']}</b>
+                  <span style="color:var(--gray-500);font-size:12px;margin-left:6px">· {doc['kind']}</span>
+                  <div style="height:8px"></div>
+                  {doc['summary']}
+                  <div style="height:10px"></div>
+                  <div style="font-size:12px;color:var(--gray-500)">키워드: {' · '.join(doc.get('keywords', [])) or '(없음)'}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 

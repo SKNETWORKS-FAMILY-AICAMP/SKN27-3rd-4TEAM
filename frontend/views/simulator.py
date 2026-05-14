@@ -1,4 +1,4 @@
-﻿"""깡통전세 시뮬레이터 — 슬라이더로 시나리오, 판례 기반 회수율."""
+"""깡통전세 시뮬레이터 — 슬라이더로 시나리오, 판례 기반 회수율."""
 
 import streamlit as st
 import plotly.graph_objects as go
