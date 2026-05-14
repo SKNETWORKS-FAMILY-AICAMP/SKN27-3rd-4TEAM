@@ -1,4 +1,4 @@
-"""Legal consultation graph entrypoint."""
+"""v7 Legal consultation graph entrypoint."""
 from __future__ import annotations
 
 import json
@@ -7,12 +7,19 @@ from typing import Any
 from common.nodes.legal_consultation_nodes import (
     consultation_report_node,
     counselor_agent_node,
+    extra_legal_rag_search_node,
+    legal_graph_context_node,
     legal_guardrail_node,
     legal_intake_node,
     legal_rag_agent_node,
+    legal_review_node,
     legal_supervisor_node,
+    route_after_extra_legal_rag,
+    route_after_legal_graph_context,
     route_after_legal_rag,
+    route_after_legal_review,
     route_after_legal_supervisor,
+    safe_legal_fallback_node,
 )
 from common.states.legal_consultation_state import LegalConsultationState
 
@@ -24,7 +31,11 @@ def build_legal_consultation_graph():
     graph.add_node("legal_intake", legal_intake_node)
     graph.add_node("legal_supervisor", legal_supervisor_node)
     graph.add_node("legal_rag_agent", legal_rag_agent_node)
-    graph.add_node("counselor_agent", counselor_agent_node)
+    graph.add_node("friendly_counselor_agent", counselor_agent_node)
+    graph.add_node("legal_review_node", legal_review_node)
+    graph.add_node("extra_rag_search", extra_legal_rag_search_node)
+    graph.add_node("graph_context_node", legal_graph_context_node)
+    graph.add_node("safe_fallback", safe_legal_fallback_node)
     graph.add_node("legal_guardrail", legal_guardrail_node)
     graph.add_node("consultation_report", consultation_report_node)
 
@@ -35,18 +46,33 @@ def build_legal_consultation_graph():
         route_after_legal_supervisor,
         {
             "legal_rag_agent": "legal_rag_agent",
-            "counselor_agent": "counselor_agent",
+            "friendly_counselor_agent": "friendly_counselor_agent",
         },
     )
     graph.add_conditional_edges(
         "legal_rag_agent",
         route_after_legal_rag,
         {
-            "counselor_agent": "counselor_agent",
-            "legal_guardrail": "legal_guardrail",
+            "friendly_counselor_agent": "friendly_counselor_agent",
+            "legal_review_node": "legal_review_node",
         },
     )
-    graph.add_edge("counselor_agent", "legal_guardrail")
+    graph.add_edge("friendly_counselor_agent", "legal_review_node")
+    graph.add_conditional_edges(
+        "legal_review_node",
+        route_after_legal_review,
+        {
+            "legal_guardrail": "legal_guardrail",
+            "extra_rag_search": "extra_rag_search",
+            "graph_context_node": "graph_context_node",
+            "friendly_counselor_agent": "friendly_counselor_agent",
+            "legal_rag_agent": "legal_rag_agent",
+            "safe_fallback": "safe_fallback",
+        },
+    )
+    graph.add_conditional_edges("extra_rag_search", route_after_extra_legal_rag, {"legal_rag_agent": "legal_rag_agent"})
+    graph.add_conditional_edges("graph_context_node", route_after_legal_graph_context, {"legal_rag_agent": "legal_rag_agent"})
+    graph.add_edge("safe_fallback", "legal_guardrail")
     graph.add_edge("legal_guardrail", "consultation_report")
     graph.add_edge("consultation_report", END)
     return graph.compile()
@@ -76,7 +102,12 @@ def run_legal_consultation(
         "conversation_history": list(conversation_history or []),
         "agent_trace": [],
         "errors": [],
+        "claims": [],
+        "legal_points": [],
         "evidence_refs": [],
+        "graph_context": [],
+        "review_count": 0,
+        "max_review_count": 2,
     }
     try:
         return build_legal_consultation_graph().invoke(initial_state)
@@ -90,16 +121,27 @@ def _run_without_langgraph(state: LegalConsultationState) -> LegalConsultationSt
     route = route_after_legal_supervisor(state)
     if route == "legal_rag_agent":
         state = legal_rag_agent_node(state)
-        if route_after_legal_rag(state) == "counselor_agent":
+        if route_after_legal_rag(state) == "friendly_counselor_agent":
             state = counselor_agent_node(state)
     else:
         state = counselor_agent_node(state)
+    state = legal_review_node(state)
+    if route_after_legal_review(state) == "extra_rag_search":
+        state = extra_legal_rag_search_node(state)
+        state = legal_rag_agent_node(state)
+        state = legal_review_node(state)
+    if route_after_legal_review(state) == "graph_context_node":
+        state = legal_graph_context_node(state)
+        state = legal_rag_agent_node(state)
+        state = legal_review_node(state)
+    if route_after_legal_review(state) == "safe_fallback":
+        state = safe_legal_fallback_node(state)
     state = legal_guardrail_node(state)
     return consultation_report_node(state)
 
 
 def run_interactive() -> LegalConsultationState:
-    print("\n[법률상담 AI Graph]")
+    print("\n[법률상담 AI Graph v7]")
     question = input("> ").strip()
     return run_legal_consultation(question=question, session_id="interactive-legal-session")
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
-from common.schemas.shared import AgentTrace, ContextPack, RiskFinding, RiskLevel
+from common.schemas.shared import AgentStatus, AgentTrace, Claim, ContextPack, GraphContextItem, ReviewResult, RiskFinding, RiskLevel
 
 
 @dataclass
@@ -45,6 +45,7 @@ class DiagnosisPlan:
     run_legal_basis: bool = False
     reasons: list[str] = field(default_factory=list)
     skipped_agents: list[str] = field(default_factory=list)
+    pending_tasks: list[str] = field(default_factory=list)
     llm_required: bool = True
     llm_used: bool = False
     status: str = "PLANNED"
@@ -53,11 +54,20 @@ class DiagnosisPlan:
 @dataclass
 class TaskResult:
     task: str
+    agent: str = ""
+    status: AgentStatus = "COMPLETE"
+    claims: list[Claim] = field(default_factory=list)
+    legal_points: list[str] = field(default_factory=list)
     risk_items: list[RiskFinding] = field(default_factory=list)
     recommendations: list[str] = field(default_factory=list)
     evidence_refs: list[dict[str, Any]] = field(default_factory=list)
+    graph_context: list[GraphContextItem] = field(default_factory=list)
     missing_checks: list[dict[str, Any]] = field(default_factory=list)
+    review_status: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+AgentResult = TaskResult
 
 
 @dataclass
@@ -96,8 +106,22 @@ class DiagnosisState(TypedDict, total=False):
     field_validation: FieldValidationResult
     diagnosis_plan: DiagnosisPlan
 
+    current_task: str | None
+    current_agent: str | None
+    pending_tasks: list[str]
+    completed_tasks: list[str]
+    review_count: int
+    max_review_count: int
+    review_result: ReviewResult
+    claims: list[Claim]
+    legal_points: list[str]
+    evidence_refs: list[dict[str, Any]]
+    graph_context: list[GraphContextItem]
+    fallback_level: str | None
+    safe_fallback: dict[str, Any]
+
     context_packs: dict[str, ContextPack]
-    task_results: dict[str, TaskResult]
+    task_results: dict[str, AgentResult]
     risk_findings: list[RiskFinding]
     risk_score: int
     risk_level: RiskLevel

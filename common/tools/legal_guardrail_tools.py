@@ -1,7 +1,11 @@
 """Guardrail helpers for legal consultation answers."""
 from __future__ import annotations
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:  # pragma: no cover
+    def tool(func):
+        return func
 
 DISCLAIMER = "본 답변은 법률 자문이 아니라 공공자료와 판례·법령 근거를 바탕으로 한 일반 정보입니다. 구체적인 판단은 계약서와 증거를 확인한 전문가 상담을 권장합니다."
 

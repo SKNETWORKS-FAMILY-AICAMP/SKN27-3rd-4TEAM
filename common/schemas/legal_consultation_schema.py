@@ -4,7 +4,26 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+try:
+    from pydantic import BaseModel, Field
+except ImportError:  # pragma: no cover
+    def Field(default=None, default_factory=None, **_: Any):
+        return default_factory() if default_factory is not None else default
+
+    class BaseModel:
+        def __init__(self, **kwargs: Any):
+            for name, value in self.__class__.__dict__.items():
+                if name.startswith("_") or callable(value):
+                    continue
+                setattr(self, name, kwargs.pop(name, value))
+            for name, value in kwargs.items():
+                setattr(self, name, value)
+
+        def model_dump(self) -> dict[str, Any]:
+            result = {}
+            for key, value in self.__dict__.items():
+                result[key] = value.value if isinstance(value, Enum) else value
+            return result
 
 
 class LegalIntent(str, Enum):
@@ -46,9 +65,11 @@ class LegalRagResult(BaseModel):
     question_type: LegalQuestionType | str
     rag_status: str = "RAG_UNAVAILABLE"
     confidence: str = "LOW"
+    claims: list[dict[str, Any]] = Field(default_factory=list)
     legal_points: list[str] = Field(default_factory=list)
     answer_draft: str = ""
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    graph_context: list[dict[str, Any]] = Field(default_factory=list)
     llm_used: bool = False
     blocked_reason: str | None = None
 

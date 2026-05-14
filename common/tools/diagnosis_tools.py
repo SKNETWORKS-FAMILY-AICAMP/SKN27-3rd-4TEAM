@@ -1,14 +1,14 @@
-"""Diagnosis agent-specific tools.
-
-MVP connects special_clause_agent and ownership_risk_agent. Other tool names are
-left as clean extension points but are intentionally not wired into the graph yet.
-"""
+"""Diagnosis agent-specific tools following the v7 RAG contract."""
 from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:  # pragma: no cover
+    def tool(func):
+        return func
 
 from common.schemas.shared import ContextPack, RiskFinding
 from common.tools.adaptive_rag import adaptive_rag
@@ -33,7 +33,11 @@ def search_special_clause_rag(query: str, top_k: int = 5) -> ContextPack:
         query,
         filters={
             "task_type": "special_clause_analysis",
+            "tables": ["special_clause_examples", "law_documents", "public_guides", "case_documents"],
+            "domain": ["special_clause", "lease_contract", "tenant_protection"],
+            "source_type": ["checklist", "law", "case", "public_guide", "form"],
             "evidence_type": ["CHECKLIST", "STANDARD_CONTRACT", "LEGAL_GUIDE", "CASEBOOK", "LAW"],
+            "include_graph_context": True,
         },
         top_k=top_k,
     )
@@ -131,8 +135,72 @@ def search_registry_rag(query: str, top_k: int = 5) -> ContextPack:
         query,
         filters={
             "task_type": "registry_risk_analysis",
+            "tables": ["registry_guides", "contract_checklists", "law_documents", "case_documents", "public_guides"],
+            "domain": ["registry", "senior_debt", "trust_registration", "tenant_protection"],
+            "source_type": ["checklist", "law", "case", "public_guide"],
             "risk_category": ["REGISTRY_RISK", "TRUST_REGISTRATION", "IDENTITY_AUTHORITY"],
             "evidence_type": ["CHECKLIST", "CASEBOOK", "LAW", "LEGAL_GUIDE"],
+            "include_graph_context": True,
+        },
+        top_k=top_k,
+    )
+
+
+def search_market_rag(query: str, top_k: int = 5) -> ContextPack:
+    return adaptive_rag(
+        "market_risk_analysis",
+        query,
+        filters={
+            "task_type": "market_risk_analysis",
+            "tables": ["market_risk_guides", "public_guides", "case_documents"],
+            "domain": ["market_risk", "jeonse_ratio", "market_analysis"],
+            "source_type": ["market_data", "public_guide", "case"],
+            "include_graph_context": True,
+        },
+        top_k=top_k,
+    )
+
+
+def search_insurance_rag(query: str, top_k: int = 5) -> ContextPack:
+    return adaptive_rag(
+        "insurance_risk_analysis",
+        query,
+        filters={
+            "task_type": "insurance_risk_analysis",
+            "tables": ["insurance_guides", "public_guides", "law_documents"],
+            "domain": ["insurance", "HUG", "HF", "SGI"],
+            "source_type": ["insurance", "public_guide", "law"],
+            "include_graph_context": True,
+        },
+        top_k=top_k,
+    )
+
+
+def search_required_check_rag(query: str, top_k: int = 5) -> ContextPack:
+    return adaptive_rag(
+        "required_check_analysis",
+        query,
+        filters={
+            "task_type": "required_check_analysis",
+            "tables": ["contract_checklists", "public_guides", "registry_guides", "insurance_guides"],
+            "domain": ["lease_contract", "registry", "insurance", "required_check"],
+            "source_type": ["checklist", "public_guide", "insurance"],
+            "include_graph_context": True,
+        },
+        top_k=top_k,
+    )
+
+
+def search_legal_basis_rag(query: str, top_k: int = 5) -> ContextPack:
+    return adaptive_rag(
+        "legal_basis",
+        query,
+        filters={
+            "task_type": "legal_basis",
+            "tables": ["law_documents", "case_documents", "public_guides", "procedure_guides"],
+            "domain": ["lease_contract", "tenant_protection", "procedure"],
+            "source_type": ["law", "case", "dispute_case", "public_guide"],
+            "include_graph_context": True,
         },
         top_k=top_k,
     )
@@ -246,3 +314,27 @@ def classify_ownership_risk_tool(
 ) -> list[dict[str, Any]]:
     """Classify ownership and contract-authority risk findings."""
     return [asdict(finding) for finding in classify_ownership_risk(fields, owner_checks, proxy_checks)]
+
+
+@tool
+def search_market_rag_tool(query: str, top_k: int = 5) -> ContextPack:
+    """Search RAG evidence dedicated to market/jeonse-ratio risk analysis."""
+    return search_market_rag(query, top_k)
+
+
+@tool
+def search_insurance_rag_tool(query: str, top_k: int = 5) -> ContextPack:
+    """Search RAG evidence dedicated to deposit-insurance risk analysis."""
+    return search_insurance_rag(query, top_k)
+
+
+@tool
+def search_required_check_rag_tool(query: str, top_k: int = 5) -> ContextPack:
+    """Search RAG evidence dedicated to required document/checklist analysis."""
+    return search_required_check_rag(query, top_k)
+
+
+@tool
+def search_legal_basis_rag_tool(query: str, top_k: int = 5) -> ContextPack:
+    """Search RAG evidence dedicated to legal basis packaging."""
+    return search_legal_basis_rag(query, top_k)

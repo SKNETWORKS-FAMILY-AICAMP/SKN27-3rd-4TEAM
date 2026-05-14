@@ -1,4 +1,4 @@
-"""PDF-first contract diagnosis LangGraph entrypoint."""
+"""v7 PDF-first contract diagnosis LangGraph entrypoint."""
 from __future__ import annotations
 
 import json
@@ -9,17 +9,29 @@ from common.nodes.diagnosis_nodes import (
     contract_field_extractor_node,
     contract_intake_node,
     contract_parser_node,
+    contract_review_node,
     contract_supervisor_node,
+    extra_rag_search_node,
+    graph_context_node,
+    insurance_risk_agent_node,
+    legal_basis_agent_node,
+    market_risk_agent_node,
     ownership_risk_agent_node,
     report_writer_node,
+    required_check_agent_node,
     risk_judge_node,
+    route_after_extra_rag,
+    route_after_graph_context,
+    route_after_review,
+    route_after_supervisor,
+    safe_contract_fallback_node,
     special_clause_agent_node,
 )
 from common.schemas.diagnosis import DiagnosisState
 
 
 def build_diagnosis_graph():
-    """Build a conditional LangGraph for contract diagnosis."""
+    """Build the v7 task-queue + review-supervisor diagnosis graph."""
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(DiagnosisState)
@@ -27,8 +39,16 @@ def build_diagnosis_graph():
     graph.add_node("contract_parser", contract_parser_node)
     graph.add_node("contract_field_extractor", contract_field_extractor_node)
     graph.add_node("contract_supervisor", contract_supervisor_node)
-    graph.add_node("special_clause_agent", special_clause_agent_node)
-    graph.add_node("ownership_risk_agent", ownership_risk_agent_node)
+    graph.add_node("special_clause", special_clause_agent_node)
+    graph.add_node("ownership_risk", ownership_risk_agent_node)
+    graph.add_node("market_risk", market_risk_agent_node)
+    graph.add_node("insurance_risk", insurance_risk_agent_node)
+    graph.add_node("required_check", required_check_agent_node)
+    graph.add_node("legal_basis", legal_basis_agent_node)
+    graph.add_node("contract_review_node", contract_review_node)
+    graph.add_node("extra_rag_search", extra_rag_search_node)
+    graph.add_node("graph_context_node", graph_context_node)
+    graph.add_node("safe_contract_fallback", safe_contract_fallback_node)
     graph.add_node("risk_judge", risk_judge_node)
     graph.add_node("report_writer", report_writer_node)
 
@@ -36,24 +56,68 @@ def build_diagnosis_graph():
     graph.add_conditional_edges(
         "contract_intake",
         _route_after_intake,
-        {
-            "parse": "contract_parser",
-            "report": "report_writer",
-        },
+        {"parse": "contract_parser", "report": "report_writer"},
     )
     graph.add_edge("contract_parser", "contract_field_extractor")
     graph.add_edge("contract_field_extractor", "contract_supervisor")
     graph.add_conditional_edges(
         "contract_supervisor",
-        _route_after_supervisor,
+        route_after_supervisor,
         {
-            "special_clause": "special_clause_agent",
-            "ownership": "ownership_risk_agent",
+            "special_clause": "special_clause",
+            "ownership_risk": "ownership_risk",
+            "market_risk": "market_risk",
+            "insurance_risk": "insurance_risk",
+            "required_check": "required_check",
+            "legal_basis": "legal_basis",
             "judge": "risk_judge",
         },
     )
-    graph.add_edge("special_clause_agent", "ownership_risk_agent")
-    graph.add_edge("ownership_risk_agent", "risk_judge")
+    for node in ["special_clause", "ownership_risk", "market_risk", "insurance_risk", "required_check", "legal_basis"]:
+        graph.add_edge(node, "contract_review_node")
+    graph.add_conditional_edges(
+        "contract_review_node",
+        route_after_review,
+        {
+            "supervisor": "contract_supervisor",
+            "extra_rag": "extra_rag_search",
+            "graph_context": "graph_context_node",
+            "special_clause": "special_clause",
+            "ownership_risk": "ownership_risk",
+            "market_risk": "market_risk",
+            "insurance_risk": "insurance_risk",
+            "required_check": "required_check",
+            "legal_basis": "legal_basis",
+            "fallback": "safe_contract_fallback",
+        },
+    )
+    graph.add_conditional_edges(
+        "extra_rag_search",
+        route_after_extra_rag,
+        {
+            "special_clause": "special_clause",
+            "ownership_risk": "ownership_risk",
+            "market_risk": "market_risk",
+            "insurance_risk": "insurance_risk",
+            "required_check": "required_check",
+            "legal_basis": "legal_basis",
+            "fallback": "safe_contract_fallback",
+        },
+    )
+    graph.add_conditional_edges(
+        "graph_context_node",
+        route_after_graph_context,
+        {
+            "special_clause": "special_clause",
+            "ownership_risk": "ownership_risk",
+            "market_risk": "market_risk",
+            "insurance_risk": "insurance_risk",
+            "required_check": "required_check",
+            "legal_basis": "legal_basis",
+            "fallback": "safe_contract_fallback",
+        },
+    )
+    graph.add_edge("safe_contract_fallback", "contract_supervisor")
     graph.add_edge("risk_judge", "report_writer")
     graph.add_edge("report_writer", END)
     return graph.compile()
@@ -69,25 +133,23 @@ def run_diagnosis(contract_file: str | None = None, session_id: str = "demo-sess
         "context_packs": {},
         "task_results": {},
         "agent_trace": [],
+        "pending_tasks": [],
+        "completed_tasks": [],
+        "review_count": 0,
+        "max_review_count": 2,
+        "claims": [],
+        "legal_points": [],
+        "evidence_refs": [],
+        "graph_context": [],
     }
     try:
-        graph = build_diagnosis_graph()
-        return graph.invoke(initial_state)
+        return build_diagnosis_graph().invoke(initial_state)
     except ModuleNotFoundError:
         return _run_without_langgraph(initial_state)
 
 
 def _route_after_intake(state: DiagnosisState) -> str:
     return "parse" if state.get("analysis_ready") else "report"
-
-
-def _route_after_supervisor(state: DiagnosisState) -> str:
-    plan = state.get("diagnosis_plan")
-    if plan and plan.run_special_clause:
-        return "special_clause"
-    if plan and plan.run_ownership_risk:
-        return "ownership"
-    return "judge"
 
 
 def _run_without_langgraph(state: DiagnosisState) -> DiagnosisState:
@@ -97,11 +159,29 @@ def _run_without_langgraph(state: DiagnosisState) -> DiagnosisState:
     state = contract_parser_node(state)
     state = contract_field_extractor_node(state)
     state = contract_supervisor_node(state)
-    plan = state.get("diagnosis_plan")
-    if plan and plan.run_special_clause:
-        state = special_clause_agent_node(state)
-    if plan and plan.run_ownership_risk:
-        state = ownership_risk_agent_node(state)
+    while route_after_supervisor(state) != "judge":
+        route = route_after_supervisor(state)
+        agent = {
+            "special_clause": special_clause_agent_node,
+            "ownership_risk": ownership_risk_agent_node,
+            "market_risk": market_risk_agent_node,
+            "insurance_risk": insurance_risk_agent_node,
+            "required_check": required_check_agent_node,
+            "legal_basis": legal_basis_agent_node,
+        }[route]
+        state = agent(state)
+        state = contract_review_node(state)
+        if route_after_review(state) == "extra_rag":
+            state = extra_rag_search_node(state)
+            state = agent(state)
+            state = contract_review_node(state)
+        if route_after_review(state) == "graph_context":
+            state = graph_context_node(state)
+            state = agent(state)
+            state = contract_review_node(state)
+        if route_after_review(state) == "fallback":
+            state = safe_contract_fallback_node(state)
+        state = contract_supervisor_node(state)
     state = risk_judge_node(state)
     return report_writer_node(state)
 
@@ -113,7 +193,7 @@ def _json_default(value: Any) -> Any:
 
 
 def run_interactive() -> DiagnosisState:
-    print("\n[전세계약 PDF 진단 그래프]")
+    print("\n[전세계약 PDF 진단 그래프 v7]")
     print("계약서 PDF/TXT 경로를 입력하세요. 비워두면 mock 계약서로 실행합니다.")
     contract_file = input("> ").strip() or None
     return run_diagnosis(contract_file=contract_file, session_id="interactive-diagnosis-session")

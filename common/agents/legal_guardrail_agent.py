@@ -49,7 +49,12 @@ draft_answer:
             )
         )
     except Exception as exc:
-        raise LLMUnavailable(f"legal guardrail failed: {exc}") from exc
+        return GuardrailResult(
+            safe_answer=static_guarded,
+            changed=static_guarded != draft_answer,
+            warnings=[f"LLM guardrail unavailable; static guardrail applied: {exc}"],
+            llm_used=False,
+        )
 
     return GuardrailResult(
         safe_answer=str(data.get("safe_answer") or static_guarded),

@@ -9,7 +9,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:  # pragma: no cover
+    def tool(func):
+        return func
 
 from common.schemas.diagnosis import ContractSections, FieldValidationResult, PdfValidationResult
 from common.tools.llm import extract_json_object, ollama_generate

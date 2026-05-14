@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from common.schemas.legal_consultation_schema import LegalSupervisorDecision
+from common.schemas.legal_consultation_schema import LegalIntent, LegalQuestionType, LegalRoute, LegalSupervisorDecision
 from common.tools.llm import LLMUnavailable, build_chat_llm
 
 
@@ -60,7 +60,43 @@ def run_legal_supervisor_agent(user_question: str, conversation_history: list[di
             ]
         )
     except Exception as exc:
-        raise LLMUnavailable(f"legal supervisor structured output failed: {exc}") from exc
+        return _deterministic_decision(user_question, reason=f"structured LLM unavailable: {exc}")
     if not isinstance(decision, LegalSupervisorDecision):
         raise LLMUnavailable("legal supervisor returned invalid structured output")
     return decision
+
+
+def _deterministic_decision(user_question: str, *, reason: str) -> LegalSupervisorDecision:
+    text = user_question or ""
+    if not text.strip():
+        return LegalSupervisorDecision(
+            intent=LegalIntent.CLARIFICATION_NEEDED,
+            route=LegalRoute.CLARIFICATION,
+            question_type=LegalQuestionType.GENERAL,
+            needs_clarification=True,
+            clarification_questions=["상담할 내용을 조금 더 자세히 알려주세요."],
+            reason=reason,
+        )
+    if any(token in text for token in ["근저당", "등기", "가압류", "신탁", "소유자"]):
+        qtype = LegalQuestionType.REGISTRY_RISK
+    elif any(token in text for token in ["보증보험", "HUG", "HF", "SGI"]):
+        qtype = LegalQuestionType.DEPOSIT_INSURANCE
+    elif any(token in text for token in ["내용증명", "임차권등기", "지급명령", "소송", "절차"]):
+        qtype = LegalQuestionType.PROCEDURE_GUIDE
+    elif any(token in text for token in ["보증금", "반환", "못 돌려"]):
+        qtype = LegalQuestionType.DEPOSIT_RETURN
+    elif any(token in text for token in ["뭐야", "쉽게", "설명", "대항력", "확정일자", "전입신고"]):
+        qtype = LegalQuestionType.SIMPLE_EXPLANATION
+    else:
+        qtype = LegalQuestionType.GENERAL
+    route = LegalRoute.BOTH if qtype != LegalQuestionType.GENERAL else LegalRoute.COUNSELOR
+    intent = LegalIntent.SIMPLE_EXPLANATION if qtype == LegalQuestionType.SIMPLE_EXPLANATION else LegalIntent.LEGAL_RAG_REQUIRED
+    return LegalSupervisorDecision(
+        intent=intent,
+        route=route,
+        question_type=qtype,
+        needs_rag=route in {LegalRoute.LEGAL_RAG, LegalRoute.BOTH},
+        needs_clarification=False,
+        clarification_questions=[],
+        reason=reason,
+    )

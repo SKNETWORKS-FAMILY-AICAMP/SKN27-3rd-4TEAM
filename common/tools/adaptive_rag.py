@@ -12,9 +12,21 @@ try:
     import requests
 except ImportError:  # pragma: no cover
     requests = None
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:  # pragma: no cover
+    def tool(func):
+        return func
 
-from common.schemas.shared import ContextPack, GraphContextItem, RetrievedContext, RetrievalQuality
+from common.schemas.shared import ContextPack, RetrievedContext, RetrievalQuality
+from common.tools.v7_contracts import (
+    graph_context_to_dicts,
+    normalize_evidence_refs,
+    parse_graph_context,
+    raw_rag_items,
+    references_to_contexts,
+    table_filters_to_doc_types,
+)
 
 TASK_SOURCE_MAP: dict[str, list[str]] = {
     "special_clause_analysis": ["체크리스트", "표준계약서", "사례집", "법령"],
@@ -87,24 +99,28 @@ def adaptive_rag(task_type: str, query: str, filters: dict | None = None, top_k:
 
 
 def _remote_rag(task_type: str, query: str, filters: dict | None, top_k: int) -> ContextPack | None:
-    base_url = os.getenv("RAG_SERVER_URL", "http://localhost:8001").rstrip("/")
+    base_url = os.getenv("RAG_SERVER_URL", "http://localhost:8000").rstrip("/")
     timeout = float(os.getenv("RAG_SERVER_TIMEOUT", "12"))
     session_id = str((filters or {}).get("session_id") or f"diag-{uuid.uuid4().hex[:12]}")
     try:
-        payload = _post_json(
-            f"{base_url}/api/v1/chat/query",
-            {
-                "session_id": session_id,
-                "message": _build_remote_query(task_type, query, filters),
-                "history": [],
-            },
-            timeout,
-        )
+        payload = _post_json(f"{base_url}/api/v1/rag/retrieve", _retrieve_body(task_type, query, filters, top_k, session_id), timeout)
     except Exception:
-        return None
+        try:
+            payload = _post_json(
+                f"{base_url}/api/v1/chat/query",
+                {
+                    "session_id": session_id,
+                    "message": _build_remote_query(task_type, query, filters),
+                    "history": [],
+                },
+                timeout,
+            )
+        except Exception:
+            return None
 
-    contexts = [_reference_to_context(ref, index) for index, ref in enumerate(payload.get("references", [])[:top_k], 1)]
-    graph_context = _parse_graph_context(payload.get("graph_context", []))
+    evidence = normalize_evidence_refs(raw_rag_items(payload))[:top_k]
+    contexts = references_to_contexts(evidence)
+    graph_context = parse_graph_context(payload.get("graph_context", []))
     return ContextPack(
         task_type=task_type,
         query=query,
@@ -112,6 +128,22 @@ def _remote_rag(task_type: str, query: str, filters: dict | None, top_k: int) ->
         quality=RetrievalQuality(bool(contexts), _average_score(contexts), "remote RAG references adapted"),
         graph_context=graph_context,
     )
+
+
+def _retrieve_body(task_type: str, query: str, filters: dict | None, top_k: int, session_id: str) -> dict[str, Any]:
+    public_filters = dict(filters or {})
+    tables = [str(item) for item in public_filters.get("tables", [])] if isinstance(public_filters.get("tables"), list) else []
+    doc_types = table_filters_to_doc_types(tables)
+    if doc_types and "doc_type" not in public_filters:
+        public_filters["doc_type"] = doc_types
+    public_filters["session_id"] = session_id
+    return {
+        "task_type": task_type,
+        "query": query,
+        "top_k": top_k,
+        "filters": public_filters,
+        "include_graph_context": bool(public_filters.get("include_graph_context", True)),
+    }
 
 
 def _build_remote_query(task_type: str, query: str, filters: dict | None) -> str:
@@ -139,20 +171,6 @@ def _reference_to_context(reference: Any, index: int) -> RetrievedContext:
         score=_to_float(ref.get("relevance_score", ref.get("score", 0.0))),
         metadata={"provider": "remote", **metadata, "raw_reference": ref},
     )
-
-
-def _parse_graph_context(raw: list[Any]) -> list[GraphContextItem]:
-    """RAG 서버 응답의 graph_context 배열을 GraphContextItem 리스트로 변환."""
-    result = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        node = str(item.get("node", ""))
-        relation = str(item.get("relation", ""))
-        target = str(item.get("target", ""))
-        if node and relation and target:
-            result.append(GraphContextItem(node=node, relation=relation, target=target))
-    return result
 
 
 def _fallback_rag(task_type: str, query: str, top_k: int) -> ContextPack:

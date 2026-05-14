@@ -3,9 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.tools import tool
+try:
+    from langchain_core.tools import tool
+except ImportError:  # pragma: no cover
+    def tool(func):
+        return func
 
 from common.tools.adaptive_rag import adaptive_rag
+from common.tools.v7_contracts import graph_context_to_dicts, normalize_evidence_refs
 
 QUESTION_TYPE_RAG_MAP: dict[str, dict[str, list[str]]] = {
     "DEPOSIT_RETURN": {
@@ -57,7 +62,7 @@ def search_legal_rag(
         },
         top_k=top_k,
     )
-    references = [
+    raw_refs = [
         {
             "source_id": context.source_id,
             "title": context.title,
@@ -68,16 +73,15 @@ def search_legal_rag(
         }
         for context in pack.contexts
     ]
-    graph_context = [
-        {"node": item.node, "relation": item.relation, "target": item.target}
-        for item in pack.graph_context
-    ]
+    references = normalize_evidence_refs(raw_refs, fallback_table=(config["tables"][0] if config["tables"] else None))
+    graph_context = graph_context_to_dicts(pack.graph_context)
     rag_status = _rag_status(references, pack.quality.score)
     return {
         "query": query,
         "question_type": qtype,
         "tables": config["tables"],
         "domain": config["domain"],
+        "results": references,
         "references": references,
         "graph_context": graph_context,
         "quality": {

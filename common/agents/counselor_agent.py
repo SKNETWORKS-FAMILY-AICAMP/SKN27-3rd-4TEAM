@@ -19,6 +19,7 @@ def run_counselor_agent(
     conversation_history: list[dict[str, str]] | None,
 ) -> CounselorResult:
     context_summary = summarize_user_context(user_question, conversation_history)
+    safe_rag_view = _safe_counselor_input(legal_rag_result)
     prompt = f"""
 너는 친절한 부동산 법률 상담가다.
 
@@ -45,7 +46,7 @@ context_summary:
 {json.dumps(context_summary, ensure_ascii=False)}
 
 legal_rag_result:
-{json.dumps(legal_rag_result or {}, ensure_ascii=False, default=str)[:10000]}
+{json.dumps(safe_rag_view, ensure_ascii=False, default=str)[:8000]}
 
 clarification_questions:
 {json.dumps(clarification_questions or [], ensure_ascii=False)}
@@ -66,3 +67,21 @@ clarification_questions:
         followup_questions=[str(item) for item in data.get("followup_questions", [])],
         llm_used=True,
     )
+
+
+def _safe_counselor_input(legal_rag_result: dict[str, Any] | None) -> dict[str, Any]:
+    """v7: counselor receives expression-layer inputs, not full mutable state."""
+    data = legal_rag_result or {}
+    evidence_titles = [
+        str(item.get("title"))
+        for item in data.get("evidence_refs", [])
+        if isinstance(item, dict) and item.get("title")
+    ][:5]
+    return {
+        "question_type": data.get("question_type"),
+        "legal_points": data.get("legal_points", []),
+        "answer_draft": data.get("answer_draft", ""),
+        "evidence_titles": evidence_titles,
+        "confidence": data.get("confidence"),
+        "blocked_reason": data.get("blocked_reason"),
+    }

@@ -21,7 +21,17 @@ class LegalConsultationState(TypedDict, total=False):
     legal_rag_result: dict[str, Any]
     counselor_result: dict[str, Any]
 
+    current_task: str | None
+    current_agent: str | None
+    review_count: int
+    max_review_count: int
+    review_result: dict[str, Any]
+    claims: list[dict[str, Any]]
+    legal_points: list[str]
     evidence_refs: list[dict[str, Any]]
+    graph_context: list[dict[str, Any]]
+    fallback_level: str | None
+    safe_fallback: dict[str, Any]
 
     draft_answer: str
     safe_answer: str

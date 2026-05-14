@@ -12,9 +12,21 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from langchain_core.tools import tool
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    def load_dotenv(*args, **kwargs):
+        return False
+try:
+    from langchain_core.tools import tool
+except ImportError:  # pragma: no cover
+    def tool(func):
+        return func
+
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:  # pragma: no cover
+    ChatOpenAI = None  # type: ignore[assignment]
 
 try:
     import requests
@@ -28,11 +40,14 @@ LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", os.getenv("OLLAMA_T
 ENABLE_LLM = os.getenv("ENABLE_LLM", "1") not in {"0", "false", "False", "no"}
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 class LLMUnavailable(RuntimeError):
@@ -43,6 +58,8 @@ def build_chat_llm(*, temperature: float = 0.0) -> ChatOpenAI:
     """Build a LangChain chat model for agent structured output."""
     if not ENABLE_LLM:
         raise LLMUnavailable("LLM disabled by ENABLE_LLM=0")
+    if ChatOpenAI is None:
+        raise LLMUnavailable("langchain_openai is not installed")
     if LLM_PROVIDER == "groq":
         if not GROQ_API_KEY:
             raise LLMUnavailable("GROQ_API_KEY is not configured")
@@ -52,7 +69,15 @@ def build_chat_llm(*, temperature: float = 0.0) -> ChatOpenAI:
             base_url=GROQ_BASE_URL,
             temperature=temperature,
             timeout=LLM_TIMEOUT_SECONDS,
-            max_tokens=4096,
+        )
+    if LLM_PROVIDER == "openai":
+        if not OPENAI_API_KEY:
+            raise LLMUnavailable("OPENAI_API_KEY is not configured")
+        return ChatOpenAI(
+            model=OPENAI_MODEL,
+            api_key=OPENAI_API_KEY,
+            temperature=temperature,
+            timeout=LLM_TIMEOUT_SECONDS,
         )
     if LLM_PROVIDER == "ollama":
         raise LLMUnavailable("Ollama provider does not support required structured-output ChatOpenAI path")
