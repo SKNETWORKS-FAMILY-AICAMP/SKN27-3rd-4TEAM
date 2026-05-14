@@ -1,5 +1,8 @@
 """상담 챗 (메인) — 진단 결과 + RAG 스타일 챗봇."""
 
+import os
+
+import requests
 import streamlit as st
 from utils.components import (
     render_status_pill,
@@ -9,6 +12,31 @@ from utils.components import (
 
 
 # ─── 데모 RAG 응답 ──────────────────────────────────────
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
+
+
+def register_documents_to_history(registry_file, contract_file) -> dict:
+    """등기부등본과 임대차계약서를 백엔드에 보내 진단 기록으로 저장한다."""
+    response = requests.post(
+        f"{BACKEND_BASE_URL}/api/v1/contracts/register-diagnosis",
+        files={
+            "registry_document": (
+                registry_file.name,
+                registry_file.getvalue(),
+                registry_file.type or "application/octet-stream",
+            ),
+            "lease_contract": (
+                contract_file.name,
+                contract_file.getvalue(),
+                contract_file.type or "application/octet-stream",
+            ),
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 DEMO_REPLIES = [
     {
         "q_match": ["근저당", "담보", "대출"],
@@ -359,27 +387,36 @@ def render():
 
         doc_l, doc_r = st.columns(2)
         with doc_l:
-            st.file_uploader(
+            registry_file = st.file_uploader(
                 "등기부등본 (.docx)",
                 type=["docx"],
                 help="등기소·정부24에서 발급한 등기부등본을 docx 파일로 첨부하세요.",
             )
         with doc_r:
-            st.file_uploader(
+            contract_file = st.file_uploader(
                 "임대차계약서 (.docx)",
                 type=["docx"],
                 help="특약 조항이 모두 포함된 임대차계약서를 docx 파일로 첨부하세요.",
             )
 
-        st.markdown(
-            """
-            <div style="background:var(--green-soft);border:1px solid #b8ead9;border-radius:12px;
-                        padding:12px 14px;margin-top:10px;font-size:13px;color:#005a3f">
-              ✓ 분석 완료 · 자세한 진단 결과·유사 사례는 <b>진단 기록 → 자세히</b>에서 확인하세요
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if registry_file and contract_file:
+            if st.button("업로드 문서로 진단 기록 등록", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("문서를 분석하고 진단 기록에 저장하는 중입니다..."):
+                        result = register_documents_to_history(registry_file, contract_file)
+                    st.session_state.history_loaded = False
+                    st.success(
+                        f"진단 기록에 등록되었습니다. 위험도 {result['risk_score']:.0f}점 · {result['risk_level']}"
+                    )
+                except requests.exceptions.ConnectionError:
+                    st.error("FastAPI 서버에 연결할 수 없습니다. 백엔드 서버가 켜져 있는지 확인해 주세요.")
+                except requests.exceptions.HTTPError as exc:
+                    detail = exc.response.text if exc.response is not None else str(exc)
+                    st.error(f"진단 기록 등록 실패: {detail}")
+                except Exception as exc:
+                    st.error(f"진단 기록 등록 중 오류가 발생했습니다: {exc}")
+        else:
+            st.info("등기부등본과 임대차계약서를 모두 업로드하면 진단 기록에 등록할 수 있습니다.")
 
         section_divider()
 

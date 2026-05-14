@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
+from typing import Any
+
+import requests
 import streamlit as st
+
+
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
 
 
 RECORDS = [
@@ -101,6 +109,106 @@ RECORDS = [
 LEVEL_KO = {"danger": "위험", "caution": "주의", "safe": "안전"}
 LEVEL_COLOR = {"danger": "var(--red)", "caution": "var(--amber)", "safe": "var(--green)"}
 LEVEL_BG = {"danger": "var(--red-soft)", "caution": "var(--amber-soft)", "safe": "var(--green-soft)"}
+
+
+def fetch_diagnosis_logs(limit: int = 30) -> list[dict[str, Any]]:
+    """백엔드 진단 기록 API에서 최근 진단 로그를 가져온다."""
+    response = requests.get(
+        f"{BACKEND_BASE_URL}/api/v1/diagnosis/logs",
+        params={"limit": limit},
+        timeout=5,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("logs", [])
+
+
+def delete_diagnosis_log(log_id: int) -> None:
+    """백엔드 진단 기록 API에서 특정 로그를 삭제한다."""
+    response = requests.delete(
+        f"{BACKEND_BASE_URL}/api/v1/diagnosis/logs/{log_id}",
+        timeout=5,
+    )
+    response.raise_for_status()
+
+
+def normalize_backend_record(row: dict[str, Any]) -> dict[str, Any]:
+    """백엔드 diagnosis_logs 행을 기존 진단 기록 카드 형식으로 변환한다."""
+    score = int(float(row.get("risk_score") or 0))
+    level = _normalize_level(row.get("risk_level"), score)
+    created_at = _format_created_at(row.get("created_at"))
+    summary = str(row.get("result_summary") or "").strip()
+    session_id = str(row.get("session_id") or "")
+
+    return {
+        "id": row.get("id") or session_id or f"log-{created_at}",
+        "addr": _summary_title(summary, session_id),
+        "deposit": "-",
+        "area": "-",
+        "year": "-",
+        "score": score,
+        "level": level,
+        "date": created_at,
+        "fav": False,
+        "tags": _tags_from_summary(summary, level),
+        "ratio": "-",
+        "senior": "-",
+        "hug": "-",
+        "summary": summary,
+        "session_id": session_id,
+    }
+
+
+def _normalize_level(value: Any, score: int) -> str:
+    """백엔드 위험 등급 표현을 화면용 danger/caution/safe로 정규화한다."""
+    text = str(value or "").upper()
+    if text in {"위험", "DANGER", "HIGH", "CRITICAL"}:
+        return "danger"
+    if text in {"주의", "CAUTION", "MEDIUM"}:
+        return "caution"
+    if text in {"안전", "SAFE", "LOW"}:
+        return "safe"
+    if score >= 70:
+        return "danger"
+    if score >= 40:
+        return "caution"
+    return "safe"
+
+
+def _format_created_at(value: Any) -> str:
+    """created_at 값을 카드 날짜 문자열로 표시한다."""
+    if not value:
+        return "-"
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return f"{parsed.month}/{parsed.day}"
+    except ValueError:
+        return text[:10]
+
+
+def _summary_title(summary: str, session_id: str) -> str:
+    """요약문에서 카드 제목으로 쓸 첫 문장을 만든다."""
+    if summary:
+        first_line = summary.splitlines()[0].strip()
+        return first_line[:42] + ("..." if len(first_line) > 42 else "")
+    return f"진단 기록 {session_id[:8]}" if session_id else "진단 기록"
+
+
+def _tags_from_summary(summary: str, level: str) -> list[str]:
+    """요약문과 위험 등급을 기반으로 간단한 태그를 만든다."""
+    tags: list[str] = [LEVEL_KO.get(level, "진단")]
+    keyword_map = {
+        "근저당": "근저당",
+        "신탁": "신탁등기",
+        "특약": "특약",
+        "전세가": "전세가율",
+        "보증보험": "보증보험",
+    }
+    for keyword, label in keyword_map.items():
+        if keyword in summary and label not in tags:
+            tags.append(label)
+    return tags[:3]
 
 
 def _history_css() -> str:
@@ -275,10 +383,57 @@ def _history_css() -> str:
 
 
 def _init_state():
+    if "history_records" not in st.session_state:
+        st.session_state.history_records = RECORDS
+    if "history_source" not in st.session_state:
+        st.session_state.history_source = "demo"
+    if "history_api_error" not in st.session_state:
+        st.session_state.history_api_error = None
     if "compare_set" not in st.session_state:
         st.session_state.compare_set = set()
     if "history_favorites" not in st.session_state:
-        st.session_state.history_favorites = {rec["id"] for rec in RECORDS if rec["fav"]}
+        st.session_state.history_favorites = {rec["id"] for rec in st.session_state.history_records if rec["fav"]}
+
+
+def _load_backend_records() -> None:
+    """백엔드 진단 기록을 세션 상태에 적재하고 실패 시 데모 데이터를 유지한다."""
+    try:
+        logs = fetch_diagnosis_logs()
+        if logs:
+            st.session_state.history_records = [normalize_backend_record(row) for row in logs]
+            st.session_state.history_source = "backend"
+            st.session_state.history_api_error = None
+        else:
+            st.session_state.history_records = []
+            st.session_state.history_source = "backend"
+            st.session_state.history_api_error = None
+    except requests.RequestException as exc:
+        st.session_state.history_records = RECORDS
+        st.session_state.history_source = "demo"
+        st.session_state.history_api_error = str(exc)
+
+
+def _delete_record(rec: dict[str, Any]) -> None:
+    """진단 기록 카드 삭제 버튼 처리."""
+    rec_id = rec["id"]
+    if st.session_state.history_source == "backend":
+        try:
+            delete_diagnosis_log(int(rec_id))
+            _load_backend_records()
+            st.session_state.compare_set.discard(rec_id)
+            st.session_state.history_favorites.discard(rec_id)
+            st.toast("진단 기록을 삭제했습니다.")
+        except requests.exceptions.HTTPError as exc:
+            detail = exc.response.text if exc.response is not None else str(exc)
+            st.error(f"진단 기록 삭제 실패: {detail}")
+        except Exception as exc:
+            st.error(f"진단 기록 삭제 중 오류가 발생했습니다: {exc}")
+        return
+
+    st.session_state.history_records = [item for item in st.session_state.history_records if item["id"] != rec_id]
+    st.session_state.compare_set.discard(rec_id)
+    st.session_state.history_favorites.discard(rec_id)
+    st.toast("데모 진단 기록을 화면에서 삭제했습니다.")
 
 
 def _go(view: str):
@@ -313,7 +468,7 @@ def _filtered_records():
     sort_key = st.session_state.get("history_sort", "최신순")
     favorites = st.session_state.history_favorites
 
-    records = RECORDS
+    records = st.session_state.history_records
     if query:
         records = [rec for rec in records if query in rec["addr"]]
     if level_filter == "즐겨찾기만":
@@ -377,7 +532,7 @@ def _record_card(rec):
     )
 
     st.markdown('<div class="history-actions">', unsafe_allow_html=True)
-    detail_col, compare_col = st.columns(2)
+    detail_col, compare_col, delete_col = st.columns(3)
     with detail_col:
         if st.button("자세히", key=f"open_{rec['id']}", use_container_width=True):
             st.session_state.selected_record_id = rec["id"]
@@ -396,6 +551,10 @@ def _record_card(rec):
                 st.toast("비교는 최대 2개 매물까지 선택할 수 있어요.")
             else:
                 st.session_state.compare_set.add(rec["id"])
+            st.rerun()
+    with delete_col:
+        if st.button("삭제", key=f"del_{rec['id']}", use_container_width=True):
+            _delete_record(rec)
             st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -440,6 +599,9 @@ def _compare_panel(selected):
 
 def render():
     _init_state()
+    if not st.session_state.get("history_loaded"):
+        _load_backend_records()
+        st.session_state.history_loaded = True
     _handle_favorite_query()
     st.markdown(_history_css(), unsafe_allow_html=True)
     st.markdown('<div class="history-page-title">진단 기록</div>', unsafe_allow_html=True)
@@ -469,14 +631,30 @@ def render():
         if st.button("+ 새 진단", type="primary", use_container_width=True):
             _go("chat")
 
+    refresh_col, source_col = st.columns([0.25, 1.75])
+    with refresh_col:
+        if st.button("새로고침", use_container_width=True):
+            _load_backend_records()
+            st.rerun()
+    with source_col:
+        if st.session_state.history_source == "backend":
+            st.caption(f"백엔드 `{BACKEND_BASE_URL}`의 진단 기록을 표시 중입니다.")
+        else:
+            st.warning(
+                "백엔드 진단 기록 API에 연결하지 못해 데모 기록을 표시 중입니다. "
+                "FastAPI 서버와 DB가 켜져 있는지 확인해 주세요.",
+                icon="⚠️",
+            )
+
     st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
 
     summary_cols = st.columns(4)
+    all_records = st.session_state.history_records
     summary = [
-        ("총 진단", f"{len(RECORDS)}건", "gray"),
-        ("위험", f"{sum(1 for rec in RECORDS if rec['level'] == 'danger')}건", "danger"),
-        ("주의", f"{sum(1 for rec in RECORDS if rec['level'] == 'caution')}건", "caution"),
-        ("안전", f"{sum(1 for rec in RECORDS if rec['level'] == 'safe')}건", "safe"),
+        ("총 진단", f"{len(all_records)}건", "gray"),
+        ("위험", f"{sum(1 for rec in all_records if rec['level'] == 'danger')}건", "danger"),
+        ("주의", f"{sum(1 for rec in all_records if rec['level'] == 'caution')}건", "caution"),
+        ("안전", f"{sum(1 for rec in all_records if rec['level'] == 'safe')}건", "safe"),
     ]
     for col, (label, value, tone) in zip(summary_cols, summary):
         with col:
@@ -496,9 +674,9 @@ def render():
                 _record_card(rec)
         st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
 
-    selected = [rec for rec in RECORDS if rec["id"] in st.session_state.compare_set]
+    selected = [rec for rec in all_records if rec["id"] in st.session_state.compare_set]
     if selected:
-        names = " · ".join(rec["addr"].split()[1] for rec in selected)
+        names = " · ".join(rec["addr"].split()[1] if len(rec["addr"].split()) > 1 else rec["addr"] for rec in selected)
         st.markdown(
             f"""
             <div class="history-compare-bar">

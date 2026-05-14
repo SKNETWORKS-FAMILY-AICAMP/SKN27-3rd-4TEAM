@@ -160,3 +160,40 @@ async def get_diagnosis_logs(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"로그 조회 오류: {str(e)}")
+
+
+@router.delete(
+    "/logs/{log_id}",
+    summary="진단 이력 삭제",
+)
+async def delete_diagnosis_log(
+    log_id: int,
+    settings: Settings = Depends(get_settings),
+):
+    """diagnosis_logs에서 특정 진단 기록 1건을 삭제합니다."""
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(
+            host=settings.DB_HOST,
+            port=settings.DB_PORT,
+            database=settings.DB_NAME,
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD,
+        )
+        cur = conn.cursor()
+        cur.execute("DELETE FROM diagnosis_logs WHERE id = %s RETURNING id", (log_id,))
+        deleted = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="삭제할 진단 기록을 찾을 수 없습니다.")
+
+        return {"deleted": True, "id": log_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"로그 삭제 오류: {str(e)}")

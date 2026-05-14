@@ -40,7 +40,7 @@ VIEWS = {
     "chat": {"label": "AI 안심 상담", "icon": "💬", "badge": None, "render": chat.render},
     "cases": {"label": "유사 사례 및 판례 찾기", "icon": "⚖️", "badge": None, "render": playbook.render_cases},
     "checklist": {"label": "안전 체크리스트", "icon": "✅", "badge": None, "render": checklist.render},
-    "history": {"label": "내 진단 기록", "icon": "📋", "badge": "6", "render": history.render},
+    "history": {"label": "내 진단 기록", "icon": "📋", "badge": None, "render": history.render},
     "playbook": {"label": "피해 대응 안내", "icon": "🛡️", "badge": None, "render": playbook.render},
     "market": {"label": "지역 시세", "icon": "📍", "badge": None, "render": market.render},
     "property": {"label": "최근 확인 매물", "icon": "🏠", "badge": None, "render": property.render},
