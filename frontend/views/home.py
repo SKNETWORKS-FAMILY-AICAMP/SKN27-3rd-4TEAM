@@ -307,7 +307,7 @@ def render():
                 <div class="home-step-card">
                   <div class="home-num">1</div>
                   <div class="home-card-title">자료 업로드</div>
-                  <div class="home-card-copy">등기부등본 PDF, 계약서 사진, 또는 주소만 입력해도 됩니다.</div>
+                  <div class="home-card-copy">등기부등본·임대차계약서 docx 파일을 업로드하거나 주소만 입력해도 됩니다.</div>
                 </div>
                 <div class="home-step-card">
                   <div class="home-num">2</div>
