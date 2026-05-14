@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import psycopg2
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from psycopg2.extras import Json
 
@@ -33,6 +33,8 @@ class DiagnosisRegisterResponse(BaseModel):
     risk_score: float
     risk_level: str
     summary: str
+    risk_factors: list[dict] = Field(default_factory=list)
+    parsed_fields: dict[str, str | int | None] = Field(default_factory=dict)
     saved: bool = True
 
 
@@ -67,6 +69,8 @@ async def upload_contract(file: UploadFile = File(...)):
 async def register_uploaded_documents(
     registry_document: UploadFile = File(...),
     lease_contract: UploadFile = File(...),
+    address: str = Form(""),
+    deposit_amount: int | None = Form(None),
     settings: Settings = Depends(get_settings),
 ):
     """등기부등본과 임대차계약서를 받아 diagnosis_logs에 1차 진단 기록을 저장한다."""
@@ -87,13 +91,20 @@ async def register_uploaded_documents(
         raise HTTPException(status_code=500, detail=f"문서 추출 중 오류가 발생했습니다: {exc}") from exc
 
     session_id = f"upload-{uuid.uuid4().hex[:12]}"
+    submitted_fields = _merge_submitted_fields(
+        contract.parsed_fields,
+        address=address,
+        deposit_amount=deposit_amount,
+    )
     combined_text = (
+        f"[사용자 입력 매물]\n주소: {submitted_fields.get('address') or '미입력'}\n"
+        f"보증금(만원): {submitted_fields.get('deposit_amount') or '미입력'}\n\n"
         f"[등기부등본: {registry.filename}]\n{registry.extracted_text}\n\n"
         f"[임대차계약서: {contract.filename}]\n{contract.extracted_text}"
     )
     risk_factors = _build_upload_risk_factors(registry.extracted_text, contract.extracted_text)
     risk_score, risk_level = _score_upload_risks(risk_factors)
-    summary = _build_upload_summary(contract.parsed_fields, registry.filename, contract.filename, risk_factors)
+    summary = _build_upload_summary(submitted_fields, registry.filename, contract.filename, risk_factors)
 
     try:
         _insert_diagnosis_log(
@@ -113,7 +124,24 @@ async def register_uploaded_documents(
         risk_score=risk_score,
         risk_level=risk_level,
         summary=summary,
+        risk_factors=risk_factors,
+        parsed_fields=submitted_fields,
     )
+
+
+def _merge_submitted_fields(
+    parsed_fields: dict[str, str | int | None],
+    address: str,
+    deposit_amount: int | None,
+) -> dict[str, str | int | None]:
+    """사용자가 등록한 매물 입력값을 문서 추출값보다 우선 적용한다."""
+    merged = dict(parsed_fields)
+    clean_address = address.strip()
+    if clean_address:
+        merged["address"] = clean_address
+    if isinstance(deposit_amount, int) and deposit_amount > 0:
+        merged["deposit_amount"] = deposit_amount
+    return merged
 
 
 def _build_upload_risk_factors(registry_text: str, contract_text: str) -> list[dict]:

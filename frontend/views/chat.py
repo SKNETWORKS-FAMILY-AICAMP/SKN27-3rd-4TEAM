@@ -15,10 +15,14 @@ from utils.components import (
 BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
 
 
-def register_documents_to_history(registry_file, contract_file) -> dict:
+def register_documents_to_history(registry_file, contract_file, address: str, deposit_amount: int) -> dict:
     """등기부등본과 임대차계약서를 백엔드에 보내 진단 기록으로 저장한다."""
     response = requests.post(
         f"{BACKEND_BASE_URL}/api/v1/contracts/register-diagnosis",
+        data={
+            "address": address,
+            "deposit_amount": deposit_amount,
+        },
         files={
             "registry_document": (
                 registry_file.name,
@@ -41,40 +45,35 @@ DEMO_REPLIES = [
     {
         "q_match": ["근저당", "담보", "대출"],
         "answer": (
-            "<b>네, 가장 큰 위험 요소입니다.</b><br/><br/>"
-            "현재 매물 등기부등본상 <b>근저당권 ₩2.1억 (○○저축은행, 2022.11 설정)</b>이 잡혀 있고, "
-            "보증금 ₩2.5억과 합산하면 <b>총 부담률 184%</b>로 매매가를 초과합니다. "
-            "경매 시 선순위 채권이 우선 변제되어 임차인이 회수할 잔여분이 거의 없을 가능성이 높습니다.<br/><br/>"
-            "<b>대안:</b> 잔금일까지 근저당 말소 특약을 반드시 명시하고, 미말소 시 계약을 무효로 한다는 조항을 추가하세요. "
-            "유사 종로구 47건 분석 결과 이 특약을 포함했을 때 회수율이 76%까지 상승했습니다."
+            "<b>근저당은 보증금 회수 가능성을 크게 흔드는 핵심 위험 요소입니다.</b><br/><br/>"
+            "업로드한 등기부등본에서 근저당·저당권·채권최고액 문구가 발견되면, "
+            "해당 권리가 임차인의 보증금보다 먼저 변제되는 선순위 권리인지 확인해야 합니다.<br/><br/>"
+            "<b>대안:</b> 잔금일까지 말소 조건을 특약에 넣고, 미말소 시 계약 해제와 보증금 반환 조건을 명확히 적는 것이 좋습니다."
         ),
         "sources": [
-            "📄 등기부등본 p.3",
+            "📄 업로드 등기부등본",
             "⚖️ 주택임대차보호법 제3조의2",
-            "⚖️ 대법원 2022다48327",
-            "📝 종로 명륜동 '23년 사례",
+            "📝 권리관계 점검 기준",
         ],
     },
     {
         "q_match": ["전세가율", "시세", "위험"],
         "answer": (
-            "<b>전세가율 91%로 깡통전세 임계치를 초과했습니다.</b><br/><br/>"
-            "이 매물의 보증금은 ₩2.5억이고, 종로구 명륜2가 동일 면적(42㎡) 매물의 평균 매매가는 ₩2.75억입니다. "
-            "전세가율이 80%를 넘으면 일반적으로 위험, 90%를 넘으면 사실상 깡통전세로 분류됩니다.<br/><br/>"
-            "<b>HUG 전세보증보험은 전세가율 90% 초과 시 가입이 거절될 수 있습니다.</b> "
-            "보증보험 가입이 안 된다면 이 매물은 피하시는 것을 권합니다."
+            "<b>전세가율은 보증금이 매매 시세 대비 얼마나 높은지 보는 지표입니다.</b><br/><br/>"
+            "업로드한 계약서의 보증금과 실거래가/시세 데이터를 함께 비교해야 정확한 전세가율을 계산할 수 있습니다. "
+            "일반적으로 비율이 높을수록 경매나 가격 하락 상황에서 보증금 회수 위험이 커집니다.<br/><br/>"
+            "현재 업로드 진단에서는 문서 기반 위험 신호를 먼저 보여주고, 시세 연동값이 있으면 전세가율 판단까지 함께 확장할 수 있습니다."
         ),
         "sources": [
-            "🏠 국토부 실거래가 2025",
-            "⚖️ HUG 전세보증보험 약관 제10조",
-            "📊 종로구 평균 전세가율 통계",
+            "🏠 실거래가/시세 비교 기준",
+            "⚖️ 보증보험 심사 기준",
         ],
     },
     {
         "q_match": ["특약", "계약서"],
         "answer": (
-            "<b>다음 3가지 특약을 반드시 추가하세요:</b><br/><br/>"
-            "① <b>근저당 말소 조건부 무효 특약</b> — 잔금일까지 등기부상 근저당(₩2.1억) 말소 미이행 시 본 계약은 무효로 하며, "
+            "<b>업로드 계약서의 특약은 권리관계 위험과 함께 확인해야 합니다.</b><br/><br/>"
+            "① <b>선순위 권리 말소 조건부 특약</b> — 잔금일까지 등기부상 위험 권리 말소 미이행 시 본 계약은 무효로 하며, "
             "임대인은 즉시 보증금을 반환한다.<br/>"
             "② <b>권리변동 통지 의무</b> — 계약 후 등기부에 새로운 권리(근저당·가압류·신탁 등)가 추가되는 경우 임대인은 즉시 통지하고 "
             "임차인은 계약을 해지할 권리를 갖는다.<br/>"
@@ -90,16 +89,90 @@ DEMO_REPLIES = [
 
 DEFAULT_REPLY = {
     "answer": (
-        "현재 매물(<b>종로구 명륜2가 35-12</b>)의 자료를 분석해 보면, "
-        "<b>전세가율 91%</b>, <b>선순위 근저당 ₩2.1억 미말소</b>, <b>신탁등기 의심</b> 등 "
-        "3가지 치명적인 위험 신호가 있습니다.<br/><br/>"
-        "구체적으로 어떤 부분을 알려드릴까요? 아래 빠른 질문을 이용하시거나 자유롭게 물어보세요."
+        "아직 이 상담창에 연결된 업로드 진단 결과가 없습니다.<br/><br/>"
+        "등기부등본과 임대차계약서를 업로드해 진단 기록을 등록하면, "
+        "그 문서에서 발견된 근저당·신탁·압류·특약 등 실제 위험 신호를 기준으로 답변하겠습니다."
     ),
-    "sources": ["📄 등기부등본", "📋 계약서 초안", "🏠 종로구 실거래가"],
+    "sources": ["📄 업로드 대기 중"],
 }
 
 
 LEVEL_KO = {"danger": "위험", "caution": "주의", "safe": "안전"}
+
+
+def normalize_level(value: str, score: float = 0) -> str:
+    """백엔드 위험 등급을 채팅 화면용 등급으로 변환한다."""
+    text = str(value or "").upper()
+    if text in {"위험", "DANGER", "HIGH", "CRITICAL"}:
+        return "danger"
+    if text in {"주의", "CAUTION", "MEDIUM"}:
+        return "caution"
+    if text in {"안전", "SAFE", "LOW"}:
+        return "safe"
+    if score >= 70:
+        return "danger"
+    if score >= 40:
+        return "caution"
+    return "safe"
+
+
+def risk_factor_to_chat_item(factor: dict) -> tuple[str, str, str, str]:
+    """백엔드 위험 신호를 채팅 응답의 위험 항목 형식으로 변환한다."""
+    severity = str(factor.get("severity", "")).upper()
+    tone = "danger" if severity in {"HIGH", "CRITICAL"} else "caution" if severity == "MEDIUM" else "safe"
+    meta = "치명" if tone == "danger" else "주의" if tone == "caution" else "안전"
+    return (
+        factor.get("description") or factor.get("factor_id") or "문서 기반 확인 항목",
+        meta,
+        tone,
+        factor.get("advice") or "업로드 문서 원문과 계약 조건을 함께 확인하세요.",
+    )
+
+
+def build_uploaded_property_context(result: dict, registry_name: str, contract_name: str) -> dict:
+    """업로드 진단 결과를 채팅 컨텍스트로 변환한다."""
+    score = float(result.get("risk_score") or 0)
+    parsed_fields = result.get("parsed_fields") or {}
+    risk_factors = result.get("risk_factors") or []
+    address = parsed_fields.get("address") or result.get("summary") or "업로드 계약서"
+    deposit = parsed_fields.get("deposit_amount")
+    deposit_text = f"{deposit:,}만원" if isinstance(deposit, int) else "-"
+    senior = "확인 필요"
+    if any(item.get("factor_id") == "MORTGAGE" for item in risk_factors):
+        senior = "근저당/저당권 발견"
+    return {
+        "id": 0,
+        "session_id": result.get("session_id", ""),
+        "addr": str(address),
+        "deposit": deposit_text,
+        "area": "-",
+        "year": "-",
+        "score": int(score),
+        "level": normalize_level(result.get("risk_level"), score),
+        "ratio": "-",
+        "senior": senior,
+        "hug": "확인 필요",
+        "risks": [risk_factor_to_chat_item(item) for item in risk_factors],
+        "summary": result.get("summary", ""),
+        "sources": [f"📄 {registry_name}", f"📋 {contract_name}"],
+    }
+
+
+def build_context_key(mode: str, ctx_doc: dict | None, ctx_prop: dict | None) -> str:
+    """현재 상담 컨텍스트가 바뀌었는지 확인할 키를 만든다."""
+    if mode == "doc" and ctx_doc:
+        return f"doc:v2:{ctx_doc.get('title', '')}:{ctx_doc.get('kind', '')}"
+    if mode == "property" and ctx_prop:
+        return f"property:v2:{ctx_prop.get('session_id') or ctx_prop.get('id') or ctx_prop.get('addr')}"
+    return "default:v2"
+
+
+def initial_assistant_message(mode: str, ctx_doc: dict | None, ctx_prop: dict | None) -> dict:
+    """모드별 첫 안내 메시지를 생성한다."""
+    if mode == "default":
+        return DEFAULT_REPLY
+    reply = find_reply("", ctx_doc=ctx_doc if mode == "doc" else None, ctx_prop=ctx_prop if mode == "property" else None)
+    return {"answer": reply["answer"], "sources": reply["sources"]}
 
 
 def quick_questions_for(mode: str, ctx: dict | None) -> list[str]:
@@ -229,13 +302,9 @@ def find_reply(
         ratio = ctx_prop.get("ratio", "")
         hug = ctx_prop.get("hug", "")
         risks = ctx_prop.get("risks", [])
-        source_chip = f"📋 매물 진단 #{ctx_prop.get('id', 0):03d}"
+        source_id = ctx_prop.get("session_id") or f"{int(ctx_prop.get('id') or 0):03d}"
+        source_chip = f"📋 매물 진단 #{source_id}"
         badge = _badge(f"🏠 {addr} · 위험도 {score}점 ({LEVEL_KO.get(level, '')})")
-        if base:
-            return {
-                "answer": badge + base["answer"],
-                "sources": [source_chip] + base["sources"],
-            }
         risk_list_html = "".join(
             f"<li><b>{r[0]}</b> ({r[1]}) — {r[3] if len(r) > 3 else ''}</li>"
             for r in risks[:5]
@@ -269,6 +338,7 @@ def render():
         mode = "property"
     else:
         mode = "default"
+    context_key = build_context_key(mode, ctx_doc, ctx_prop)
 
     # ─── 컨텍스트 배너 ───
     if mode == "doc":
@@ -335,13 +405,14 @@ def render():
             "모든 답변은 출처를 함께 보여드립니다."
         )
     elif mode == "property":
-        eyebrow = f"상담 챗 · {ctx_prop['addr']} · 분석 #{ctx_prop['id']:03d}"
+        analysis_id = ctx_prop.get("session_id") or f"{int(ctx_prop.get('id') or 0):03d}"
+        eyebrow = f"상담 챗 · {ctx_prop['addr']} · 분석 #{analysis_id}"
         title = "내 매물 기반 AI 상담"
         head_sub = (
             f"진단된 매물(<b>{ctx_prop['addr']}</b>)의 위험 항목·계약 정보를 근거로 답변합니다."
         )
     else:
-        eyebrow = "상담 챗 · 종로구 명륜2가 35-12 · 분석 #A1F-203"
+        eyebrow = "상담 챗 · 업로드 문서 기반"
         title = "내 자료 기반 AI 상담"
         head_sub = "업로드한 등기부등본·계약서를 근거로 질문에 답합니다. 모든 답변은 출처를 함께 보여드립니다."
 
@@ -361,8 +432,6 @@ def render():
         st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
         if mode == "property":
             render_status_pill(ctx_prop["level"], ctx_prop["score"], f"{LEVEL_KO[ctx_prop['level']]} 매물")
-        elif mode == "default":
-            render_status_pill("danger", 78, "깡통전세 위험")
         # doc 모드는 상태 핀 생략 (배너로 이미 표시)
 
     section_divider()
@@ -378,12 +447,13 @@ def render():
 
         info_l, info_r = st.columns([2, 1])
         with info_l:
-            st.text_input(
+            address_input = st.text_input(
                 "주소",
-                value="서울 종로구 명륜2가 35-12 한빛빌라 302호",
+                value="",
+                placeholder="계약서에 적힌 주소를 입력하거나 문서 업로드 후 자동 추출 결과를 확인하세요.",
             )
         with info_r:
-            st.number_input("보증금 (만원)", value=25000, step=500, format="%d")
+            deposit_input = st.number_input("보증금 (만원)", min_value=0, value=0, step=500, format="%d")
 
         doc_l, doc_r = st.columns(2)
         with doc_l:
@@ -403,11 +473,24 @@ def render():
             if st.button("업로드 문서로 진단 기록 등록", type="primary", use_container_width=True):
                 try:
                     with st.spinner("문서를 분석하고 진단 기록에 저장하는 중입니다..."):
-                        result = register_documents_to_history(registry_file, contract_file)
+                        result = register_documents_to_history(
+                            registry_file,
+                            contract_file,
+                            address_input,
+                            int(deposit_input),
+                        )
                     st.session_state.history_loaded = False
+                    st.session_state.chat_context_property = build_uploaded_property_context(
+                        result,
+                        registry_file.name,
+                        contract_file.name,
+                    )
+                    st.session_state.pop("messages", None)
+                    st.session_state.pop("chat_message_context_key", None)
                     st.success(
                         f"진단 기록에 등록되었습니다. 위험도 {result['risk_score']:.0f}점 · {result['risk_level']}"
                     )
+                    st.rerun()
                 except requests.exceptions.ConnectionError:
                     st.error("FastAPI 서버에 연결할 수 없습니다. 백엔드 서버가 켜져 있는지 확인해 주세요.")
                 except requests.exceptions.HTTPError as exc:
@@ -433,13 +516,18 @@ def render():
         unsafe_allow_html=True,
     )
 
-    # 세션 메시지 초기화 (모드 진입 시 이미 셋업됨)
-    if "messages" not in st.session_state:
+    # 세션 메시지 초기화 또는 상담 컨텍스트 변경 시 첫 답변을 다시 만든다.
+    if (
+        "messages" not in st.session_state
+        or st.session_state.get("chat_message_context_key") != context_key
+    ):
+        first_reply = initial_assistant_message(mode, ctx_doc, ctx_prop)
         st.session_state.messages = [{
             "role": "assistant",
-            "content": DEFAULT_REPLY["answer"],
-            "sources": DEFAULT_REPLY["sources"],
+            "content": first_reply["answer"],
+            "sources": first_reply["sources"],
         }]
+        st.session_state.chat_message_context_key = context_key
 
     # 빠른 질문 (모드별 동적)
     quick = st.columns(4)
@@ -473,7 +561,7 @@ def render():
     # 입력
     placeholder = {
         "doc": "예: 이 문서의 핵심 판시 사항이 뭔가요?",
-        "property": "예: 근저당 ₩2.1억은 어떻게 대응해야 하나요?",
+        "property": "예: 발견된 근저당은 어떻게 대응해야 하나요?",
         "default": "예: 이 특약이 왜 위험한가요?",
     }[mode]
     if prompt := st.chat_input(placeholder):
