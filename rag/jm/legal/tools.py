@@ -1,5 +1,5 @@
 # rag/jm/legal/tools.py
-# 법률 상담 에이전트에서 법령 근거 확인에만 사용할 전용 도구들을 정의합니다.
+# 법률 상담 에이전트에서 사용할 RAG 검색 도구와 답변 검토 도구를 정의합니다.
 
 from __future__ import annotations
 
@@ -60,24 +60,53 @@ def _exclude_hits_by_file_keywords(
 
 @tool
 def legal_document_search_tool(query: str, k: int = 5) -> str:
-    """law 폴더에 적재된 법률 문서만 검색해 관련 근거 chunk를 반환합니다."""
+    """법령, 판례, 표준계약서, 절차 문서를 모두 대상으로 RAG 근거를 검색합니다."""
 
-    hits = search_legal_documents(query=query, k=k)
+    hits = search_legal_documents(query=query, k=k, scope="all")
     return _hits_to_json(hits)
 
 
 @tool
 def law_article_search_tool(query: str, k: int = 5) -> str:
-    """법령 문서 중심으로 조항 근거를 검색합니다."""
+    """법률, 시행령, 민법, 특별법 같은 법령 조항 중심으로 근거를 검색합니다."""
 
     expanded_query = f"{query}\n법 조항 법령 주택임대차보호법 민법 특별법 시행령"
-    hits = search_legal_documents(query=expanded_query, k=max(k * 2, 8))
+    hits = search_legal_documents(query=expanded_query, k=max(k * 2, 8), scope="law")
     law_hits = _filter_hits_by_file_keywords(
         hits,
         ("법률", "시행령", "민법", "주택임대차보호법", "특별법"),
     )
     law_hits = _exclude_hits_by_file_keywords(law_hits, ("사례집", "표준계약서"))
     return _hits_to_json(law_hits[:k] if law_hits else hits[:k])
+
+
+@tool
+def judgement_search_tool(query: str, k: int = 5) -> str:
+    """판례 문서만 대상으로 RAG 근거를 검색합니다."""
+
+    expanded_query = f"{query}\n판례 대법원 지방법원 고등법원 판결 결정"
+    hits = search_legal_documents(query=expanded_query, k=k, scope="judgement")
+    return _hits_to_json(hits)
+
+
+@tool
+def standard_contract_search_tool(query: str, k: int = 5) -> str:
+    """주택임대차표준계약서 문서만 대상으로 RAG 근거를 검색합니다."""
+
+    expanded_query = f"{query}\n주택임대차표준계약서 표준계약서 계약서 임대차계약"
+    hits = search_legal_documents(query=expanded_query, k=max(k * 2, 8), scope="standard_contract")
+    contract_hits = _filter_hits_by_file_keywords(hits, ("표준계약서", "주택임대차표준계약서"))
+    return _hits_to_json(contract_hits[:k] if contract_hits else hits[:k])
+
+
+@tool
+def legal_procedure_search_tool(query: str, k: int = 5) -> str:
+    """임차권등기명령, 전세피해 신청 같은 법률 절차 중심 근거를 검색합니다."""
+
+    expanded_query = f"{query}\n절차 신청 명령 등기 구제 지원 상담 피해자 결정"
+    hits = search_legal_documents(query=expanded_query, k=k, scope="all")
+    procedure_hits = _filter_hits_by_file_keywords(hits, ("상담사례집", "특별법", "주택임대차보호법"))
+    return _hits_to_json(procedure_hits[:k] if procedure_hits else hits[:k])
 
 
 @tool
@@ -94,7 +123,7 @@ def legal_answer_review_tool(answer: str, evidence_json: str) -> str:
         issues.append("검색 근거가 없습니다.")
     if len(answer.strip()) < 80:
         issues.append("답변이 너무 짧아 법률 근거 설명이 부족합니다.")
-    if not any(keyword in answer for keyword in ("근거", "법", "조항", "확인", "계약")):
+    if not any(keyword in answer for keyword in ("근거", "법", "조항", "판례", "계약서", "확인", "절차")):
         issues.append("답변에 법률 근거나 확인 사항이 충분히 드러나지 않습니다.")
     if not any(keyword in answer for keyword in ("변호사", "법률 상담", "공공", "확인")):
         issues.append("최종 법률 판단은 전문가에게 확인해야 한다는 안내가 부족합니다.")
@@ -110,5 +139,8 @@ def legal_answer_review_tool(answer: str, evidence_json: str) -> str:
 LEGAL_TOOLS = [
     legal_document_search_tool,
     law_article_search_tool,
+    judgement_search_tool,
+    standard_contract_search_tool,
+    legal_procedure_search_tool,
     legal_answer_review_tool,
 ]

@@ -1,5 +1,5 @@
 # rag/jm/legal/agent.py
-# 법률 문서만 근거로 사용해 전세 관련 법률 상담 답변을 생성합니다.
+# 법령, 판례, 표준계약서, 절차 문서를 근거로 전세 관련 법률 상담 답변을 생성합니다.
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class LegalAgentResult:
 
 
 def _format_legal_hits(hits: list[LegalSearchHit]) -> str:
-    """검색된 법률 chunk를 LLM 프롬프트에 넣기 좋은 형태로 정리합니다."""
+    """검색된 법률 RAG chunk를 LLM 프롬프트에 넣기 좋은 형태로 정리합니다."""
 
     lines: list[str] = []
     for idx, hit in enumerate(hits, start=1):
@@ -57,8 +57,7 @@ def _legal_system_prompt() -> str:
 
     return (
         "당신은 전세사기 방지 프로젝트의 legal_agent입니다. "
-        "반드시 제공된 법령/법률 상담 절차 문서 근거만 사용해 답변하세요. "
-        "특약 작성이나 표준계약서 해석은 특약 에이전트의 영역이므로 깊게 다루지 마세요. "
+        "반드시 제공된 법령, 판례, 표준계약서, 법률 절차 문서 근거만 사용해 답변하세요. "
         "일반 예방 사례집, 부동산 거래 테이블, 감정 상담 데이터는 사용하지 마세요. "
         "답변은 한국어로 작성하고, 단정적인 법률 판단 대신 확인해야 할 조건과 다음 행동을 제시하세요. "
         "근거가 부족하면 부족하다고 말하고 추가 확인이 필요한 항목을 분명히 적으세요."
@@ -76,9 +75,9 @@ def _draft_with_openai(question: str, context: str) -> str:
             "human",
             "사용자 질문:\n"
             f"{question}\n\n"
-            "검색된 법률 근거:\n"
+            "검색된 법률 RAG 근거:\n"
             f"{context}\n\n"
-            "위 근거만 바탕으로 답변해줘.",
+            "위 근거만 바탕으로 법률 상담 답변 초안을 작성해줘.",
         ),
     ]
     return str(llm.invoke(messages).content)
@@ -91,8 +90,8 @@ def _draft_with_ollama(question: str, context: str) -> str:
     prompt = (
         f"{_legal_system_prompt()}\n\n"
         f"사용자 질문:\n{question}\n\n"
-        f"검색된 법률 근거:\n{context}\n\n"
-        "위 근거만 바탕으로 답변해줘."
+        f"검색된 법률 RAG 근거:\n{context}\n\n"
+        "위 근거만 바탕으로 법률 상담 답변 초안을 작성해줘."
     )
     response = requests.post(
         f"{cfg.ollama_base_url.rstrip('/')}/api/generate",
@@ -117,10 +116,10 @@ def _review_answer(answer: str, hits: list[LegalSearchHit]) -> tuple[bool, str]:
     """답변이 최소한의 법률 상담 품질 기준을 만족하는지 점검합니다."""
 
     if not hits:
-        return False, "법률 문서 검색 결과가 없습니다."
+        return False, "법률 RAG 검색 결과가 없습니다."
     if len(answer.strip()) < 80:
         return False, "답변 길이가 너무 짧아 근거 설명이 부족합니다."
-    if not any(keyword in answer for keyword in ("근거", "확인", "계약", "법")):
+    if not any(keyword in answer for keyword in ("근거", "확인", "계약", "법", "판례", "절차")):
         return False, "법률 근거 또는 확인 사항이 답변에 충분히 드러나지 않았습니다."
     return True, "PASS"
 
@@ -131,23 +130,27 @@ def _finalize_answer(answer: str, hits: list[LegalSearchHit], review_message: st
     source_text = _source_summary(hits)
     return (
         f"{answer.strip()}\n\n"
-        "참고한 법률 문서:\n"
-        f"{source_text if source_text else '- 검색된 법률 문서 없음'}\n\n"
-        "주의: 이 답변은 DB에 적재된 법률 문서 기반의 상담 보조 결과이며, "
+        "참고한 법률 RAG 문서:\n"
+        f"{source_text if source_text else '- 검색된 법률 RAG 문서 없음'}\n\n"
+        "주의: 이 답변은 DB에 적재된 법률 관련 문서 기반의 상담 보조 결과이며, "
         "최종 법률 판단은 변호사 또는 공공 법률 상담 기관에 확인해야 합니다.\n"
         f"검토 결과: {review_message}"
     )
 
 
 def run_legal_agent(question: str, k: int = 5) -> LegalAgentResult:
-    """법률 문서 전용 RAG 검색과 답변 검토를 순서대로 실행합니다."""
+    """법률 RAG 검색과 답변 검토를 순서대로 실행합니다."""
 
-    hits = search_legal_documents(question, k=k)
+    hits = search_legal_documents(question, k=k, scope="all")
     answer = _draft_answer(question, hits)
     passed, message = _review_answer(answer, hits)
 
     if not passed:
-        extra_hits = search_legal_documents(f"{question}\n법령 법률 조항 절차", k=max(k * 2, 8))
+        extra_hits = search_legal_documents(
+            f"{question}\n법령 판례 표준계약서 절차",
+            k=max(k * 2, 8),
+            scope="all",
+        )
         if len(extra_hits) > len(hits):
             hits = extra_hits
             answer = _draft_answer(question, hits)
