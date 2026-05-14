@@ -34,6 +34,8 @@ class Settings(BaseSettings):
 
     # ── OpenAI (embedding 전용 — chat LLM은 Groq 사용) ───
     OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_TEMPERATURE: float = 0.0
     EMBEDDING_TEMPERATURE: float = 0.0   # 임베딩에는 미사용, 호환용
 
     # ── Groq (chat LLM) ───────────────────────────
@@ -62,7 +64,7 @@ class Settings(BaseSettings):
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # ── RAG 파라미터 ──────────────────────────────
-    RAG_TOP_K: int = 10           # 5 → 10: 타입별 균형 검색을 위해 상향
+    RAG_TOP_K: int = 4
     RAG_SCORE_THRESHOLD: float = 0.25  # 유사도 임계값 (이하 문서 제외)
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 80

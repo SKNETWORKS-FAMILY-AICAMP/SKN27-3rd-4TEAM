@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # ── RAG 파라미터 ──────────────────────────────
-    RAG_TOP_K: int = 10             # 타입별 균형 검색을 위해 5→10 상향
+    RAG_TOP_K: int = 4
     RAG_SCORE_THRESHOLD: float = 0.25  # 유사도 임계값 (이하 문서 제외)
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 80

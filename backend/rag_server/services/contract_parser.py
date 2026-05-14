@@ -138,7 +138,10 @@ class ContractParser:
                 match = re.search(pattern, text)
                 if not match:
                     continue
-                amount = int(match.group(1).replace(",", ""))
+                raw_amount = (match.group(1) or "").replace(",", "").strip()
+                if not raw_amount or not raw_amount.isdigit():
+                    continue
+                amount = int(raw_amount)
                 suffix = match.group(0)
                 if "만원" in suffix:
                     return amount

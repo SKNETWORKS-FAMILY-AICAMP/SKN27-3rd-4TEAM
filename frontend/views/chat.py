@@ -27,11 +27,10 @@ def _api_base_urls() -> list[str]:
     ]
     urls = ["http://localhost:8000"]
     for value in configured:
-        if value and value.rstrip("/") not in urls:
-            urls.append(value.rstrip("/"))
-    for fallback in ("http://localhost:8001",):
-        if fallback not in urls:
-            urls.append(fallback)
+        if value:
+            normalized = value.rstrip("/")
+            if normalized and normalized not in urls:
+                urls.append(normalized)
     return urls
 
 
@@ -42,7 +41,7 @@ def _session_id() -> str:
 
 
 def _post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    last_error = ""
+    errors: list[str] = []
     for base_url in _api_base_urls():
         try:
             response = requests.post(
@@ -52,14 +51,14 @@ def _post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
             if response.ok:
                 return response.json()
-            last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+            errors.append(f"{base_url}: HTTP {response.status_code}: {response.text[:300]}")
         except requests.RequestException as exc:
-            last_error = str(exc)
-    raise RuntimeError(last_error or "backend unavailable")
+            errors.append(f"{base_url}: {exc}")
+    raise RuntimeError("; ".join(errors) or "backend unavailable")
 
 
 def _post_file(path: str, uploaded_file: Any) -> dict[str, Any]:
-    last_error = ""
+    errors: list[str] = []
     file_tuple = (
         uploaded_file.name,
         uploaded_file.getvalue(),
@@ -75,22 +74,26 @@ def _post_file(path: str, uploaded_file: Any) -> dict[str, Any]:
             )
             if response.ok:
                 return response.json()
-            last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+            errors.append(f"{base_url}: HTTP {response.status_code}: {response.text[:300]}")
         except requests.RequestException as exc:
-            last_error = str(exc)
-    raise RuntimeError(last_error or "backend unavailable")
+            errors.append(f"{base_url}: {exc}")
+    raise RuntimeError("; ".join(errors) or "backend unavailable")
+
+
+def _strip_html(value: str) -> str:
+    return value.replace("<br/>", "\n").replace("<br>", "\n")
 
 
 def _history_for_api() -> list[dict[str, str]]:
     history: list[dict[str, str]] = []
     for message in st.session_state.get("messages", [])[-8:]:
-        content = str(message.get("content", ""))
-        history.append({"role": message.get("role", "user"), "content": _strip_html(content)})
+        history.append(
+            {
+                "role": str(message.get("role", "user")),
+                "content": _strip_html(str(message.get("content", ""))),
+            }
+        )
     return history
-
-
-def _strip_html(value: str) -> str:
-    return value.replace("<br/>", "\n").replace("<br>", "\n")
 
 
 def _extract_docx_text(data: bytes) -> str:
@@ -137,7 +140,7 @@ def ask_backend(question: str) -> dict[str, Any]:
     message = question
     if context:
         message = (
-            "아래 전세계약서 진단 결과를 우선 참고해 답변해 주세요.\n\n"
+            "아래 전세 계약서 진단 결과를 우선 참고해서 답변해 주세요.\n\n"
             f"{_format_diagnosis_for_prompt(context)}\n\n"
             f"사용자 질문: {question}"
         )
@@ -215,8 +218,8 @@ def _risk_level_key(level: str | None, score: float | int | None) -> str:
 def _render_diagnosis_summary(result: dict[str, Any]) -> None:
     level = result.get("risk_level")
     score = result.get("risk_score", 0)
-    level_key = _risk_level_key(level, score)
     factors = result.get("risk_factors") or []
+    render_status_pill(_risk_level_key(level, score), int(float(score or 0)), "계약서 위험도")
     st.markdown(
         f"""
         <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:12px;
@@ -232,38 +235,25 @@ def _render_diagnosis_summary(result: dict[str, Any]) -> None:
         """,
         unsafe_allow_html=True,
     )
-    render_status_pill(level_key, int(float(score or 0)), "계약서 위험도")
-    if factors:
-        for item in factors[:4]:
-            st.markdown(
-                f"- **{item.get('category') or item.get('factor_id')}**: "
-                f"{item.get('description', '')}"
-            )
+    for item in factors[:4]:
+        st.markdown(
+            f"- **{item.get('category') or item.get('factor_id')}**: "
+            f"{item.get('description', '')}"
+        )
 
 
 def render() -> None:
     law_banner(
-        "<b>전세계약 상담</b> · 업로드한 계약서 진단 결과와 RAG 근거를 함께 참고합니다.",
+        "<b>전세 계약 상담</b> · 업로드한 계약서 진단 결과와 RAG 근거를 함께 참고합니다.",
         pill="RAG 연결",
     )
 
-    col_h1, col_h2 = st.columns([3, 1.2])
-    with col_h1:
-        st.markdown(
-            '<div style="font-size:12px;font-weight:700;color:var(--gray-500);'
-            'letter-spacing:.04em;margin-bottom:6px">AI 계약 상담</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("# 전세계약서와 법률 근거 기반 상담")
-        st.markdown(
-            '<p style="color:var(--gray-500);font-size:14px;margin-top:-8px">'
-            '질문은 RAG 챗봇으로, 계약서 파일은 진단 agent 경로로 보냅니다.</p>',
-            unsafe_allow_html=True,
-        )
-    with col_h2:
-        st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
-        status = "safe" if st.session_state.get("backend_ready") else "caution"
-        render_status_pill(status, 100 if status == "safe" else 60, "Backend")
+    st.markdown("# 전세 계약서 법률 근거 기반 상담")
+    st.markdown(
+        '<p style="color:var(--gray-500);font-size:14px;margin-top:-8px">'
+        "질문은 RAG 채팅으로, 계약서 파일은 진단 agent 경로로 보냅니다.</p>",
+        unsafe_allow_html=True,
+    )
 
     section_divider()
 
@@ -285,10 +275,12 @@ def render() -> None:
                 try:
                     result = diagnose_contract(uploaded)
                     st.session_state.diagnosis_context = result
+                    st.session_state.latest_diagnosis = result
+                    st.session_state.history_loaded = False
                     st.session_state.backend_ready = True
                     st.session_state.messages = [
                         _assistant_message(
-                            "계약서 진단이 완료되었습니다. 이제 이 계약서 기준으로 질문해 주세요.",
+                            "계약서 진단이 완료되었습니다. 이제 이 계약서를 기준으로 질문해 주세요.",
                             _references(result),
                         )
                     ]
@@ -306,7 +298,7 @@ def render() -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = [
             _assistant_message(
-                "안녕하세요. 전세계약 관련 질문을 입력하거나 계약서 파일을 먼저 업로드해 주세요.",
+                "안녕하세요. 전세 계약 관련 질문을 입력하거나 계약서 파일을 먼저 업로드해 주세요.",
                 [],
             )
         ]
@@ -340,7 +332,7 @@ def render() -> None:
     for message in st.session_state.messages:
         _render_message(message)
 
-    if prompt := st.chat_input("전세계약, 보증금, 특약, 등기부 관련 질문을 입력하세요"):
+    if prompt := st.chat_input("전세 계약, 보증금, 특약, 등기부 관련 질문을 입력하세요."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.spinner("RAG 근거를 찾고 답변을 생성하는 중입니다..."):
             try:

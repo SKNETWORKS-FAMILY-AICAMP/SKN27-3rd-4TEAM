@@ -170,9 +170,9 @@ class RAGPipeline:
             graph_risks = self._get_fallback_risk_factors()
 
         response = await self._diag_chain.ainvoke({
-            "context":       self._format_context(raw_results),
-            "risk_factors":  json.dumps(graph_risks, ensure_ascii=False, indent=2),
-            "contract_text": contract_text[:4000],
+            "context":       self._format_context(raw_results[:4], max_chars_per_doc=700),
+            "risk_factors":  json.dumps(graph_risks[:6], ensure_ascii=False),
+            "contract_text": contract_text[:2500],
         })
 
         raw_answer = response.content if hasattr(response, "content") else str(response)
@@ -182,12 +182,14 @@ class RAGPipeline:
 
     # ── 내부 헬퍼 ─────────────────────────────────────────
 
-    def _format_context(self, results: list[dict]) -> str:
+    def _format_context(self, results: list[dict], max_chars_per_doc: int = 1200) -> str:
         if not results:
             return "관련 문서를 찾지 못했습니다."
         parts = []
         for i, r in enumerate(results, 1):
             meta  = r.get("metadata", {})
+            content = str(r.get("content", ""))[:max_chars_per_doc]
+            r = {**r, "content": content}
             parts.append(
                 f"[{i}] [{meta.get('doc_type','문서')}] {meta.get('title','제목없음')} "
                 f"(유사도: {r.get('score', 0):.2f})\n{r['content']}"

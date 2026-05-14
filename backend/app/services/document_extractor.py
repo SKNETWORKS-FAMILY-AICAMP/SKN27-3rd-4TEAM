@@ -143,7 +143,10 @@ class DocumentExtractor:
             match = re.search(pattern, text)
             if not match:
                 continue
-            amount = int(match.group(1).replace(",", ""))
+            raw_amount = (match.group(1) or "").replace(",", "").strip()
+            if not raw_amount or not raw_amount.isdigit():
+                continue
+            amount = int(raw_amount)
             if "만원" in match.group(0):
                 return amount
             return amount // 10_000 if amount >= 10_000 else amount

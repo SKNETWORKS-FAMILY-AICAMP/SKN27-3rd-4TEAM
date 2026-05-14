@@ -151,7 +151,9 @@ class ContractParser:
         for pat in patterns:
             m = re.search(pat, text)
             if m:
-                raw = m.group(1).replace(",", "")
+                raw = (m.group(1) or "").replace(",", "").strip()
+                if not raw or not raw.isdigit():
+                    continue
                 try:
                     amount = int(raw)
                     # 원 단위면 만원으로 변환
@@ -173,7 +175,9 @@ class ContractParser:
         for pat in patterns:
             m = re.search(pat, text)
             if m:
-                raw = m.group(1).replace(",", "")
+                raw = (m.group(1) or "").replace(",", "").strip()
+                if not raw or not raw.isdigit():
+                    continue
                 try:
                     amount = int(raw)
                     if amount >= 1_000_000:
