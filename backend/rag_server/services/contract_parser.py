@@ -1,4 +1,4 @@
-"""Contract text extraction and lightweight field parsing."""
+"""Contract text extraction and deterministic field parsing."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-import pdfplumber
+try:
+    import pdfplumber
+except ModuleNotFoundError:  # pragma: no cover - DOCX parsing does not need pdfplumber
+    pdfplumber = None
 
 from rag_server.models.schemas import ContractInfo
 
@@ -26,25 +29,26 @@ RISK_KEYWORDS = [
     "무허가",
     "위반건축물",
     "계약금",
-    "잔금",
+    "보증금",
+    "월임대료",
+    "월세",
     "확정일자",
     "전입신고",
     "대항력",
     "우선변제권",
     "대리인",
     "위임",
-    "인감",
+    "신탁",
     "소유자",
     "원상복구",
     "수리",
-    "하자",
+    "이자",
     "전세보증보험",
+    "임대보증금보증",
     "HUG",
     "SGI",
-    "보증금",
     "특약",
     "반환",
-    "신탁",
 ]
 
 
@@ -64,6 +68,8 @@ class ContractParser:
     @staticmethod
     def extract_pdf_text(pdf_bytes: bytes) -> str:
         parts: list[str] = []
+        if pdfplumber is None:
+            return "[PDF extraction error: pdfplumber is not installed]"
         try:
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                 for page in pdf.pages:
@@ -90,94 +96,29 @@ class ContractParser:
         return "\n".join(lines)
 
     def _parse(self, text: str) -> ContractInfo:
-        return ContractInfo(
-            lessor_name=self._extract_name(text, ["임대인", "집주인", "소유자"]),
-            lessee_name=self._extract_name(text, ["임차인", "세입자"]),
-            address=self._extract_address(text),
-            deposit_amount=self._extract_money(text, ["보증금", "전세금", "임대차보증금"]),
-            monthly_rent=self._extract_money(text, ["월세", "차임"]) or 0,
-            contract_start=self._extract_period(text, "start"),
-            contract_end=self._extract_period(text, "end"),
-            special_terms=self._extract_special_terms(text),
+        lines = _lines(text)
+        info = ContractInfo(
+            lessor_name=_party_name(lines, "임대사업자") or _party_name(lines, "임대인"),
+            lessee_name=_party_name(lines, "임차인"),
+            address=_property_address(lines, text),
+            housing_type=_housing_type(lines),
+            area_m2=_area_m2(text),
+            deposit_amount=_deposit_amount(lines, text),
+            monthly_rent=_monthly_rent(lines, text),
+            contract_start=None,
+            contract_end=None,
+            special_terms=_special_terms(text),
             raw_text=text,
         )
-
-    @staticmethod
-    def _extract_name(text: str, labels: list[str]) -> str | None:
-        for label in labels:
-            patterns = [
-                rf"{label}\s*(?:성명|이름)?\s*[:：]\s*([가-힣A-Za-z]{{2,20}})",
-                rf"{label}\s*[\(（][^)）]*(?:성명|이름)[^)）]*[\)）]\s*([가-힣A-Za-z]{{2,20}})",
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, text)
-                if match:
-                    return match.group(1).strip()
-        return None
-
-    @staticmethod
-    def _extract_address(text: str) -> str | None:
-        patterns = [
-            r"(?:소재지|주소|부동산의 표시)\s*[:：]\s*([^\n]{5,120})",
-            r"((?:서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주)[^\n]{5,120})",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                return match.group(1).strip()
-        return None
-
-    @staticmethod
-    def _extract_money(text: str, labels: list[str]) -> int | None:
-        for label in labels:
-            patterns = [
-                rf"{label}\s*[:：]?\s*(?:금)?\s*([0-9,]+)\s*(?:원|만원)?",
-                rf"{label}[^\n]{{0,20}}([0-9,]+)\s*(?:원|만원)",
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, text)
-                if not match:
-                    continue
-                raw_amount = (match.group(1) or "").replace(",", "").strip()
-                if not raw_amount or not raw_amount.isdigit():
-                    continue
-                amount = int(raw_amount)
-                suffix = match.group(0)
-                if "만원" in suffix:
-                    return amount
-                return amount // 10000 if amount >= 1_000_000 else amount
-        return None
-
-    @staticmethod
-    def _extract_period(text: str, which: str) -> str | None:
-        pattern = (
-            r"(\d{4})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})"
-            r"(?:일)?\s*(?:부터|~|-|∼|부터\s*)\s*"
-            r"(\d{4})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})"
-        )
-        match = re.search(pattern, text)
-        if match:
-            offset = 0 if which == "start" else 3
-            y, m, d = match.group(1 + offset), match.group(2 + offset), match.group(3 + offset)
-            return f"{y}-{m.zfill(2)}-{d.zfill(2)}"
-
-        dates = re.findall(r"(\d{4})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})", text)
-        if dates:
-            y, m, d = dates[0] if which == "start" else dates[-1]
-            return f"{y}-{m.zfill(2)}-{d.zfill(2)}"
-        return None
-
-    @staticmethod
-    def _extract_special_terms(text: str) -> str | None:
-        match = re.search(
-            r"(?:특약사항|특약|기타사항)\s*[:：]?\s*([\s\S]{10,1500}?)(?=\n\s*(?:임대인|임차인|서명|날인|$))",
-            text,
-        )
-        return match.group(1).strip() if match else None
+        start, end = _contract_period(lines, text)
+        info.contract_start = start
+        info.contract_end = end
+        return info
 
     @classmethod
     def extract_risk_keywords(cls, text: str) -> list[str]:
-        return list(dict.fromkeys(keyword for keyword in RISK_KEYWORDS if keyword.lower() in text.lower()))
+        lowered = text.lower()
+        return list(dict.fromkeys(keyword for keyword in RISK_KEYWORDS if keyword.lower() in lowered))
 
     @classmethod
     def extract_summary_keywords(cls, info: ContractInfo) -> list[str]:
@@ -189,3 +130,182 @@ class ContractParser:
         if info.special_terms:
             keywords.extend(cls.extract_risk_keywords(info.special_terms))
         return list(dict.fromkeys(keywords))
+
+
+def _lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+
+
+def _next_value(lines: list[str], label: str, window: int = 4) -> str | None:
+    for index, line in enumerate(lines):
+        if label == line or label in line:
+            for value in lines[index + 1:index + 1 + window]:
+                if value and not _looks_like_label(value):
+                    return value
+    return None
+
+
+def _party_name(lines: list[str], role: str) -> str | None:
+    for index, line in enumerate(lines):
+        if line != role:
+            continue
+        for offset in range(index + 1, min(index + 10, len(lines) - 1)):
+            if "성명" in lines[offset]:
+                candidate = _strip_signature(lines[offset + 1])
+                if _looks_like_name(candidate):
+                    return candidate
+        for value in lines[index + 1:index + 6]:
+            candidate = _strip_signature(value)
+            if _looks_like_name(candidate):
+                return candidate
+    return None
+
+
+def _strip_signature(value: str) -> str:
+    return re.sub(r"\(?서명.*", "", value).strip()
+
+
+def _looks_like_name(value: str) -> bool:
+    return bool(re.fullmatch(r"[가-힣A-Za-z]{2,20}", value or ""))
+
+
+def _looks_like_label(value: str) -> bool:
+    labels = {
+        "성명",
+        "성명(법인명)",
+        "주소",
+        "주택 유형",
+        "구분",
+        "금액",
+        "월임대료",
+        "임대보증금",
+        "임대차계약기간",
+    }
+    return value in labels or value.endswith("여부")
+
+
+def _property_address(lines: list[str], text: str) -> str | None:
+    for index, line in enumerate(lines):
+        if "주택 소재지" not in line:
+            continue
+        for value in lines[index + 1:index + 6]:
+            if _looks_like_label(value):
+                continue
+            if _looks_like_property_address(value):
+                return value
+            if any(stop in value for stop in ("주택[", "아파트[", "연립주택[", "다가구주택[")):
+                return None
+    return _address_from_property_section(text)
+
+
+def _address_from_property_section(text: str) -> str | None:
+    match = re.search(
+        r"주택\s*소재지\s*\n\s*((?:서울특별시|경기도|인천광역시|부산광역시|대구광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|제주특별자치도)[^\n]{5,120})",
+        text,
+    )
+    if not match:
+        return None
+    candidate = match.group(1).strip()
+    return candidate if _looks_like_property_address(candidate) else None
+
+
+def _looks_like_property_address(value: str | None) -> bool:
+    if not value:
+        return False
+    if "[" in value or "]" in value:
+        return False
+    if not re.search(r"(서울특별시|경기도|인천광역시|부산광역시|대구광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|제주특별자치도)", value):
+        return False
+    if not re.search(r"(구|군|시)\s*[가-힣0-9]", value):
+        return False
+    return bool(re.search(r"(동|읍|면|리|가)\s*[0-9]", value) or re.search(r"제?\s*\d+\s*호", value))
+
+
+def _housing_type(lines: list[str]) -> str | None:
+    value = _next_value(lines, "주택 유형")
+    if not value:
+        return None
+    checked = re.search(r"([가-힣]+주택|아파트)\s*\[■\]", value)
+    if checked:
+        return checked.group(1)
+    return value
+
+
+def _area_m2(text: str) -> float | None:
+    match = re.search(r"주거전용면적\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*㎡", text)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"전용면적[^\d]{0,20}([0-9]+(?:\.[0-9]+)?)\s*㎡", text)
+    return float(match.group(1)) if match else None
+
+
+def _won_to_manwon(raw: str) -> int:
+    amount = int(raw.replace(",", ""))
+    return amount // 10_000 if amount >= 10_000 else amount
+
+
+def _deposit_amount(lines: list[str], text: str) -> int | None:
+    for index, line in enumerate(lines):
+        if line == "임대보증금" or "임대보증금, 월임대료" in line:
+            window = "\n".join(lines[index:index + 12])
+            match = re.search(r"₩\s*([0-9,]+)", window)
+            if match:
+                return _won_to_manwon(match.group(1))
+
+    patterns = [
+        r"임대보증금[^\n₩]{0,80}₩\s*([0-9,]+)",
+        r"보증금[^\n₩]{0,80}₩\s*([0-9,]+)",
+        r"전세금[^\n₩]{0,80}₩\s*([0-9,]+)",
+        r"임대보증금[^\n0-9]{0,30}([0-9,]+)\s*원",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.S)
+        if match:
+            return _won_to_manwon(match.group(1))
+    return None
+
+
+def _monthly_rent(lines: list[str], text: str) -> int:
+    for index, line in enumerate(lines):
+        if line == "월임대료":
+            window = "\n".join(lines[index:index + 8])
+            matches = re.findall(r"₩\s*([0-9,]+)", window)
+            if matches:
+                return _won_to_manwon(matches[-1])
+    match = re.search(r"월(?:임대료|세)[^\n₩]{0,80}₩\s*([0-9,]+)", text, re.S)
+    return _won_to_manwon(match.group(1)) if match else 0
+
+
+def _contract_period(lines: list[str], text: str) -> tuple[str | None, str | None]:
+    for index, line in enumerate(lines):
+        if "임대차계약기간" in line:
+            window = " ".join(lines[index:index + 8])
+            dates = _dates(window)
+            if len(dates) >= 2:
+                return dates[0], dates[1]
+    return None, None
+
+
+def _dates(text: str) -> list[str]:
+    values = []
+    for year, month, day in re.findall(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", text):
+        values.append(f"{year}-{month.zfill(2)}-{day.zfill(2)}")
+    for year, month, day in re.findall(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", text):
+        values.append(f"{year}-{month.zfill(2)}-{day.zfill(2)}")
+    return values
+
+
+def _special_terms(text: str) -> str | None:
+    marker = re.search(r"【\s*특약사항\s*】|\[\s*특약사항\s*\]|특약사항", text)
+    if marker:
+        tail = text[marker.end():]
+        end = re.search(r"\n\s*(?:\d+\.\s*개인정보|개인정보|임대인|임차인|서명|날인)", tail)
+        value = tail[: end.start()].strip() if end else tail[:1800].strip()
+        return value or None
+
+    match = re.search(
+        r"(?:제17조\(특약\))\s*[:\n]?\s*"
+        r"([\s\S]{10,1800}?)(?=\n\s*(?:\d+\.\s*개인정보|개인정보|임대인|임차인|서명|날인|$))",
+        text,
+    )
+    return match.group(1).strip() if match else None

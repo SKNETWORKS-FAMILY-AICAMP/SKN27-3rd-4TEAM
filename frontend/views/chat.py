@@ -215,10 +215,29 @@ def _risk_level_key(level: str | None, score: float | int | None) -> str:
     return "safe"
 
 
+def _is_diagnosis_success(result: dict[str, Any]) -> bool:
+    if result.get("risk_level") == "재업로드 필요":
+        return False
+    if "contract_supervisor:missing_basic_info" in (result.get("agent_trace") or []):
+        return False
+    return not any(
+        item.get("factor_id") == "SUPERVISOR-MISSING-BASIC"
+        for item in (result.get("risk_factors") or [])
+    )
+
+
 def _render_diagnosis_summary(result: dict[str, Any]) -> None:
     level = result.get("risk_level")
     score = result.get("risk_score", 0)
     factors = result.get("risk_factors") or []
+    if not _is_diagnosis_success(result):
+        st.warning(str(result.get("summary") or "계약서 핵심 정보가 부족해 진단을 실행하지 않았습니다."))
+        for item in factors[:4]:
+            st.markdown(
+                f"- **{item.get('category') or item.get('factor_id')}**: "
+                f"{item.get('description', '')}"
+            )
+        return
     render_status_pill(_risk_level_key(level, score), int(float(score or 0)), "계약서 위험도")
     st.markdown(
         f"""
@@ -274,13 +293,23 @@ def render() -> None:
             with st.spinner("계약서를 읽고 RAG 기반 진단을 실행하는 중입니다..."):
                 try:
                     result = diagnose_contract(uploaded)
-                    st.session_state.diagnosis_context = result
-                    st.session_state.latest_diagnosis = result
-                    st.session_state.history_loaded = False
+                    if _is_diagnosis_success(result):
+                        st.session_state.diagnosis_context = result
+                        st.session_state.latest_diagnosis = result
+                        st.session_state.pending_diagnosis_failure = None
+                        st.session_state.history_loaded = False
+                    else:
+                        st.session_state.diagnosis_context = None
+                        st.session_state.latest_diagnosis = None
+                        st.session_state.pending_diagnosis_failure = result
                     st.session_state.backend_ready = True
                     st.session_state.messages = [
                         _assistant_message(
-                            "계약서 진단이 완료되었습니다. 이제 이 계약서를 기준으로 질문해 주세요.",
+                            (
+                                "계약서 진단이 완료되었습니다. 이제 이 계약서를 기준으로 질문해 주세요."
+                                if _is_diagnosis_success(result)
+                                else "계약서 핵심 정보가 부족해 진단을 실행하지 않았습니다. 원본 계약서를 다시 업로드해 주세요."
+                            ),
                             _references(result),
                         )
                     ]
@@ -289,7 +318,9 @@ def render() -> None:
                     st.session_state.backend_ready = False
                     st.error(f"계약서 진단 실패: {exc}")
 
-    if st.session_state.get("diagnosis_context"):
+    if st.session_state.get("pending_diagnosis_failure"):
+        _render_diagnosis_summary(st.session_state.pending_diagnosis_failure)
+    elif st.session_state.get("diagnosis_context"):
         _render_diagnosis_summary(st.session_state.diagnosis_context)
 
     section_divider()

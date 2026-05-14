@@ -1,16 +1,12 @@
 """
-[미사용 — 향후 참고용]
-market_price_service.py 와 세트로 사용되는 데이터 적재 스크립트입니다.
-현재 금액 기반 판단은 딥러닝 파트에서 담당하므로 실행하지 않아도 됩니다.
+매매·전세 실거래가 CSV → PostgreSQL 적재 스크립트
+- 매매: sale_transactions  (dong_name UPSERT 포함)
+- 전세: jeonse_transactions
 
 실행 전 필수 조건:
   1. database/migration_market.sql 실행 (sale_transactions에 dong_name 컬럼 추가)
   2. data/market/ 폴더에 CSV 파일 12개 배치
      (2023~2025, 매매+전세, 오피스텔+연립다세대, 서울 종로구)
-
-매매·전세 실거래가 CSV → PostgreSQL 적재 스크립트
-- 매매: sale_transactions
-- 전세: jeonse_transactions
 
 사용법: python rag/ingestion/load_market_data.py
 """
@@ -92,11 +88,14 @@ def parse_sale(path: Path, housing_type: str) -> pd.DataFrame:
     df["deal_type"]    = "중개거래"
     df["sigungu"]      = "서울특별시 종로구"
 
-    return df[[
+    result = df[[
         "housing_type", "sigungu", "property_name", "dong_name",
         "exclusive_area", "deal_amount", "floor", "build_year",
         "deal_year_month", "deal_type",
     ]].rename(columns={"property_name": "bldg_nm"})
+
+    # NaN → None : float64 컬럼은 astype(object) 먼저 해야 None이 유지됨
+    return result.astype(object).where(result.notna(), other=None)
 
 
 def parse_jeonse(path: Path, housing_type: str) -> pd.DataFrame:
@@ -122,11 +121,14 @@ def parse_jeonse(path: Path, housing_type: str) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = default
 
-    return df[[
+    result = df[[
         "housing_type", "property_name", "dong_name",
         "exclusive_area_m2", "deposit_amount", "monthly_rent",
         "floor", "build_year", "contract_type", "contract_term", "contract_date",
     ]]
+
+    # NaN → None : float64 컬럼은 astype(object) 먼저 해야 None이 유지됨
+    return result.astype(object).where(result.notna(), other=None)
 
 
 # ── INSERT SQL ────────────────────────────────────────────────────────
@@ -139,7 +141,8 @@ VALUES (%(housing_type)s, %(sigungu)s, %(bldg_nm)s, %(dong_name)s,
         %(exclusive_area)s, %(deal_amount)s, %(floor)s, %(build_year)s,
         %(deal_year_month)s, %(deal_type)s)
 ON CONFLICT (housing_type, bldg_nm, exclusive_area, deal_amount, deal_year_month, floor)
-DO NOTHING;
+DO UPDATE SET dong_name = EXCLUDED.dong_name
+WHERE sale_transactions.dong_name IS NULL;
 """
 
 JEONSE_SQL = """

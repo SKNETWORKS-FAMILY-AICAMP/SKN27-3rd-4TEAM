@@ -1,14 +1,11 @@
 """
-[미사용 — 향후 참고용]
-현재 이 모듈은 DiagnosisService에 연결되어 있지 않습니다.
-금액 기반 위험 판단은 딥러닝 파트에서 담당하기로 분리되었습니다.
-나중에 RAG 파이프라인에 시세 컨텍스트를 다시 붙이고 싶을 때 참고하세요.
-
-시세 비교 서비스
+시세 비교 서비스 (diagnosis_agents.py의 ModelAgent에서 호출)
 - 매매 실거래가 기반: 전세가율 계산 (전세금 ÷ 매매 시세)
 - 전세 실거래가 기반: 시장 전세가 비교 (계약 전세금이 너무 높거나 낮으면 사기 신호)
-- 연동 방법: diagnosis_service.py 상단에 MarketPriceService import 후
-             build_context_text() 결과를 rag_text 앞에 prepend
+
+전제 조건:
+  sale_transactions 테이블에 dong_name 컬럼이 있어야 합니다.
+  database/migration_market.sql 실행 후 rag/ingestion/load_market_data.py 를 실행하세요.
 """
 from __future__ import annotations
 

@@ -38,6 +38,7 @@ class ChatResponse(BaseModel):
     answer: str
     references: list[RagReference] = Field(default_factory=list)
     graph_context: list[GraphContextItem] = Field(default_factory=list)
+    agent_trace: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -45,6 +46,10 @@ class ContractInfo(BaseModel):
     lessor_name: Optional[str] = None
     lessee_name: Optional[str] = None
     address: Optional[str] = None
+    housing_type: Optional[str] = None
+    area_m2: Optional[float] = None
+    estimated_sale_price: Optional[int] = None
+    jeonse_ratio: Optional[float] = None
     deposit_amount: Optional[int] = None
     monthly_rent: Optional[int] = None
     contract_start: Optional[str] = None
@@ -76,6 +81,7 @@ class DiagnosisResponse(BaseModel):
     summary: str
     references: list[RagReference] = Field(default_factory=list)
     graph_context: list[GraphContextItem] = Field(default_factory=list)
+    agent_trace: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

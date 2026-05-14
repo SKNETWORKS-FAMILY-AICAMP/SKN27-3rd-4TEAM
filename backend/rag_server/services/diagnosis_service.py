@@ -6,44 +6,22 @@ import psycopg2
 from psycopg2.extras import Json
 
 from rag_server.config import Settings
-from rag_server.core.rag_pipeline import RAGPipeline
 from rag_server.models.schemas import DiagnosisResponse, RiskFactor
 from rag_server.services.contract_parser import ContractParser
+from rag_server.services.diagnosis_agents import run_contract_diagnosis_flow
 
 
 class DiagnosisService:
-    def __init__(self, settings: Settings, rag_pipeline: RAGPipeline):
+    def __init__(self, settings: Settings):
         self._settings = settings
-        self._rag = rag_pipeline
 
     async def diagnose_text(self, session_id: str, contract_text: str) -> DiagnosisResponse:
         contract_info = ContractParser.from_text(contract_text)
-        risk_keywords = ContractParser.extract_risk_keywords(contract_text)
-        summary_keywords = ContractParser.extract_summary_keywords(contract_info)
-        keywords = list(dict.fromkeys(risk_keywords + summary_keywords))
-
-        result = await self._rag.diagnose(
-            session_id=session_id,
-            contract_text=contract_text,
-            contract_keywords=keywords,
-        )
-
-        response = DiagnosisResponse(
-            session_id=session_id,
-            contract_info=contract_info,
-            risk_score=result["risk_score"],
-            risk_level=result["risk_level"],
-            risk_factors=result["risk_factors"],
-            summary=result["summary"],
-            references=result.get("references", []),
-            graph_context=result.get("graph_context", []),
-        )
-        self._save_log(response)
-        return response
+        return await self._diagnose_contract_info(session_id, contract_info)
 
     async def diagnose_pdf(self, session_id: str, pdf_bytes: bytes) -> DiagnosisResponse:
         contract_info = ContractParser.from_pdf_bytes(pdf_bytes)
-        return await self.diagnose_text(session_id, contract_info.raw_text or "")
+        return await self._diagnose_contract_info(session_id, contract_info)
 
     async def diagnose_file(self, session_id: str, filename: str, file_bytes: bytes) -> DiagnosisResponse:
         lower = filename.lower()
@@ -55,7 +33,17 @@ class DiagnosisService:
             contract_info = ContractParser.from_text(_decode_text(file_bytes))
         else:
             raise ValueError("unsupported contract file type")
-        return await self.diagnose_text(session_id, contract_info.raw_text or "")
+        return await self._diagnose_contract_info(session_id, contract_info)
+
+    async def _diagnose_contract_info(self, session_id: str, contract_info) -> DiagnosisResponse:
+        response = await run_contract_diagnosis_flow(
+            session_id=session_id,
+            contract_info=contract_info,
+            settings=self._settings,
+        )
+        if _is_successful_diagnosis(response):
+            self._save_log(response)
+        return response
 
     def _save_log(self, response: DiagnosisResponse) -> None:
         try:
@@ -67,20 +55,29 @@ class DiagnosisService:
                 password=self._settings.DB_PASSWORD,
             )
             cur = conn.cursor()
+            ci = response.contract_info
+            contract_info_json = Json(ci.model_dump()) if ci else Json({})
+            jeonse_ratio = round(float(ci.jeonse_ratio), 2) if ci and ci.jeonse_ratio is not None else None
             cur.execute(
                 """
                 INSERT INTO diagnosis_logs
-                (session_id, input_text, risk_score, risk_level, risk_factors, rag_references, result_summary)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (session_id, input_text, risk_score, risk_level, risk_factors,
+                 rag_references, result_summary,
+                 estimated_sale_price, jeonse_ratio, contract_info)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     response.session_id,
-                    (response.contract_info.raw_text or "")[:2000],
+                    (ci.raw_text or "")[:10000] if ci else "",
                     response.risk_score,
                     response.risk_level,
                     Json([rf.model_dump() for rf in response.risk_factors]),
                     Json([ref.model_dump() for ref in response.references]),
                     response.summary[:2000],
+                    ci.estimated_sale_price if ci else None,
+                    jeonse_ratio,
+                    contract_info_json,
                 ),
             )
             conn.commit()
@@ -109,3 +106,11 @@ def _decode_text(data: bytes) -> str:
         except UnicodeDecodeError:
             continue
     return data.decode("utf-8", errors="replace")
+
+
+def _is_successful_diagnosis(response: DiagnosisResponse) -> bool:
+    if response.risk_level == "재업로드 필요":
+        return False
+    if any(trace == "contract_supervisor:missing_basic_info" for trace in response.agent_trace):
+        return False
+    return not any(rf.factor_id == "SUPERVISOR-MISSING-BASIC" for rf in response.risk_factors)
