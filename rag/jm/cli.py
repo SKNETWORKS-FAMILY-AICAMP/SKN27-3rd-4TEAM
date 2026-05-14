@@ -1,5 +1,5 @@
 # rag/jm/cli.py
-# RAG 문서 적재, 검색, 답변 생성, 에이전트 실행을 위한 CLI입니다.
+# RAG 문서 적재, 검색, 답변 생성, 에이전트 실행, 평가를 위한 CLI입니다.
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from .agent.multi_agent import run_multi_agent
 from .agent.supervisor import run_agent
+from .evaluation import evaluate_rag, load_eval_cases, report_to_dict
 from .retrieval.generate import generate_answer
 from .retrieval.ingest import ingest_paths
 from .retrieval.search import search
@@ -54,7 +55,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent(args: argparse.Namespace) -> int:
-    """CLI에서 기존 Supervisor 에이전트를 실행합니다."""
+    """CLI에서 Supervisor 에이전트를 실행합니다."""
 
     answer = run_agent(query=args.query)
     print(json.dumps({"answer": answer}, ensure_ascii=False, indent=2))
@@ -62,7 +63,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
 
 
 def _cmd_multi_agent(args: argparse.Namespace) -> int:
-    """CLI에서 역할 분리형 멀티에이전트를 실행합니다."""
+    """CLI에서 DB/RAG/설명 멀티 에이전트를 실행합니다."""
 
     result = run_multi_agent(query=args.query, k=args.k)
     payload = {
@@ -83,8 +84,26 @@ def _cmd_multi_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval(args: argparse.Namespace) -> int:
+    """CLI에서 RAG 검색/답변 품질 평가를 실행합니다."""
+
+    cases = load_eval_cases(args.cases)
+    if args.limit:
+        cases = cases[: args.limit]
+
+    report = evaluate_rag(cases=cases, k=args.k, use_ragas=args.ragas)
+    payload = report_to_dict(report)
+    output = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as file:
+            file.write(output)
+    print(output)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    """CLI argument를 파싱하고 선택된 하위 명령을 실행합니다."""
+    """CLI argument를 파싱하고 선택한 하위 명령을 실행합니다."""
 
     load_dotenv()
     if hasattr(sys.stdout, "reconfigure"):
@@ -120,6 +139,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     multi_agent_parser.add_argument("--query", required=True)
     multi_agent_parser.add_argument("--k", type=int, default=5)
     multi_agent_parser.set_defaults(func=_cmd_multi_agent)
+
+    eval_parser = subparsers.add_parser("eval", help="RAG 평가 점수 측정")
+    eval_parser.add_argument("--cases", default=None, help="평가 케이스 JSON 파일 경로")
+    eval_parser.add_argument("--k", type=int, default=3, help="검색할 문서 chunk 개수")
+    eval_parser.add_argument("--limit", type=int, default=None, help="앞에서부터 실행할 케이스 수")
+    eval_parser.add_argument("--ragas", action="store_true", help="RAGAS 점수까지 계산")
+    eval_parser.add_argument("--output", default=None, help="평가 결과 JSON 저장 경로")
+    eval_parser.set_defaults(func=_cmd_eval)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

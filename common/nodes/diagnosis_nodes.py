@@ -1,420 +1,283 @@
-"""v7 LangGraph nodes for PDF-first contract diagnosis."""
+"""LangGraph state nodes for the jeonse diagnosis workflow."""
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
-from common.agents.diagnosis_agents import (
-    TASK_AGENT_MAP,
-    run_contract_supervisor_agent,
-    run_insurance_risk_agent,
-    run_legal_basis_agent,
-    run_market_risk_agent,
-    run_ownership_risk_agent,
-    run_required_check_agent,
-    run_special_clause_agent,
-)
-from common.agents.review_supervisor_agent import review_agent_output
-from common.schemas.diagnosis import DiagnosisState, TaskResult
-from common.schemas.shared import AgentTrace, Claim, GraphContextItem, ReviewResult, ReviewStatus, RiskFinding
-from common.tools.diagnosis_tools import search_legal_basis_rag
-from common.tools.pdf_contract import (
-    detect_contract_sections,
-    extract_contract_fields,
-    extract_pdf_text,
-    ocr_pdf,
-    validate_contract_fields,
-    validate_pdf,
-)
-from common.tools.v7_contracts import merge_evidence_refs, merge_graph_context, normalize_evidence_refs
+
+from common.agents.diagnosis_agents import analyze_special_clauses_with_llm, run_special_clause_react_agent
+from common.schemas.diagnosis import DiagnosisState
+from common.schemas.shared import AgentTrace, ContextPack, RiskFinding
+from common.tools.adaptive_rag import adaptive_rag
+from common.tools.document import extract_contract_fields, parse_contract_file
+from common.tools.market import analyze_market
 
 
 def contract_intake_node(state: DiagnosisState) -> DiagnosisState:
-    validation = validate_pdf(state.get("contract_file"))
-    errors = list(state.get("errors", [])) + validation.errors
+    file_path = state.get("contract_file")
     missing = list(state.get("missing_inputs", []))
-    missing.extend(validation.warnings)
-    return _merge(
-        state,
-        pdf_validation=validation,
-        analysis_ready=validation.valid,
-        errors=errors,
-        missing_inputs=missing,
-        trace=_trace("contract_intake", "validate_pdf_tool", {"contract_file": state.get("contract_file")}, asdict(validation)),
-    )
+    errors = list(state.get("errors", []))
+
+    if file_path:
+        suffix = Path(file_path).suffix.lower()
+        if suffix not in {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg"}:
+            errors.append(f"지원하지 않는 계약서 형식입니다: {suffix}")
+    else:
+        missing.append("contract_file: 테스트용 mock 계약서로 진행")
+
+    return _merge(state, analysis_ready=not errors, missing_inputs=missing, errors=errors, trace=_trace("Contract Intake Agent", "validate_contract_input", {"contract_file": file_path}, {"analysis_ready": not errors}))
 
 
 def contract_parser_node(state: DiagnosisState) -> DiagnosisState:
-    text, pages, confidence = extract_pdf_text(state.get("contract_file"))
-    extraction_method = "extract_pdf_text_tool"
-    if state.get("pdf_validation") and state["pdf_validation"].extension == ".pdf" and len(text.strip()) < 80:
-        text, pages, confidence = ocr_pdf(state.get("contract_file"))
-        extraction_method = "ocr_pdf_tool"
-    sections = detect_contract_sections(text)
-    return _merge(
-        state,
-        contract_text=text,
-        page_texts=pages,
-        ocr_confidence=confidence,
-        contract_sections=sections,
-        trace=_trace(
-            "contract_parser",
-            f"{extraction_method}+detect_contract_sections_tool",
-            {"page_count": len(pages)},
-            {"text_length": len(text), "has_special_terms_section": bool(sections.special_terms_text)},
-        ),
-    )
+    text, pages, confidence = parse_contract_file(state.get("contract_file"))
+    return _merge(state, contract_text=text, page_texts=pages, ocr_confidence=confidence, trace=_trace("Contract Parser Agent", "parse_pdf_or_text", {"contract_file": state.get("contract_file")}, {"text_length": len(text), "pages": len(pages)}))
 
 
 def contract_field_extractor_node(state: DiagnosisState) -> DiagnosisState:
-    fields = extract_contract_fields(state.get("contract_text", ""), state.get("contract_sections"))
-    validation = validate_contract_fields(fields)
-    missing = list(state.get("missing_inputs", []))
-    missing.extend(f"field:{name}" for name in validation.missing_fields)
-    missing.extend(validation.warnings)
-    return _merge(
-        state,
-        contract_fields=fields,
-        field_validation=validation,
-        missing_inputs=list(dict.fromkeys(missing)),
-        trace=_trace("contract_field_extractor", "extract_contract_fields_tool+validate_contract_fields_tool", {}, {"fields": fields, "field_validation": asdict(validation)}),
+    fields = extract_contract_fields(state.get("contract_text", ""))
+    return _merge(state, contract_fields=fields, trace=_trace("Contract Field Extractor Agent", "extract_structured_fields", {}, {"fields": fields}))
+
+
+def special_clause_analysis_node(state: DiagnosisState) -> DiagnosisState:
+    fields = state.get("contract_fields", {})
+    terms = fields.get("special_terms") or []
+    query = "\n".join(str(term) for term in terms) or state.get("contract_text", "")[:1500]
+    context_pack = adaptive_rag("special_clause_analysis", query, filters={"doc_type": ["사례집", "법령", "판례", "서식"]}, top_k=5)
+    react_summary = run_special_clause_react_agent(query)
+
+    findings: list[RiskFinding] = []
+    revisions: list[str] = []
+    missing_defensive: list[RiskFinding] = []
+
+    joined = "\n".join(str(term) for term in terms)
+    structured = _analyze_special_clauses_with_llm(terms, context_pack)
+    findings = structured["findings"]
+    revisions = structured["revisions"]
+    missing_defensive = structured["missing_defensive"]
+
+    if not findings:
+        findings, revisions = _fallback_clause_findings(terms)
+    if findings and not revisions:
+        revisions = _revisions_from_findings(findings)
+
+    if not missing_defensive:
+        missing_defensive = _fallback_missing_defensive_clauses(joined)
+
+    packs = dict(state.get("context_packs", {}))
+    packs["special_clause_analysis"] = context_pack
+    outputs = {"finding_count": len(findings), "missing_defensive_count": len(missing_defensive), "react_agent_used": bool(react_summary), "analysis_mode": structured["mode"]}
+    if react_summary:
+        outputs["react_agent_summary"] = react_summary[:500]
+    return _merge(state, context_packs=packs, clause_findings=findings, missing_defensive_clauses=missing_defensive, recommended_revisions=revisions, trace=_trace("Special Clause Analyzer ReAct Agent", "analyze_special_terms_with_rag", {"term_count": len(terms)}, outputs))
+
+
+def _analyze_special_clauses_with_llm(terms: list[Any], context_pack: ContextPack) -> dict[str, Any]:
+    if not terms:
+        return {"findings": [], "missing_defensive": [], "revisions": [], "mode": "empty_terms"}
+
+    context_text = _context_text(context_pack)
+    try:
+        data = analyze_special_clauses_with_llm(terms, context_text)
+        findings = [_finding_from_llm(item, terms) for item in data.get("findings", []) if isinstance(item, dict)]
+        findings = [finding for finding in findings if finding is not None]
+        missing = [_missing_from_llm(item) for item in data.get("missing_defensive_clauses", []) if isinstance(item, dict)]
+        missing = [finding for finding in missing if finding is not None]
+        revisions = [str(item) for item in data.get("recommended_revisions", []) if str(item).strip()]
+        return {"findings": findings, "missing_defensive": missing, "revisions": revisions, "mode": "rag_llm_structured"}
+    except Exception:
+        return {"findings": [], "missing_defensive": [], "revisions": [], "mode": "fallback_keyword_rule"}
+
+
+def _fallback_clause_findings(terms: list[Any]) -> tuple[list[RiskFinding], list[str]]:
+    findings: list[RiskFinding] = []
+    revisions: list[str] = []
+    joined = "\n".join(str(term) for term in terms)
+    risky_patterns = [
+        ("CLAUSE_REPAIR_ALL", "수리비 전액 임차인 부담", "수리비를 임차인이 전액 부담하는 문구는 통상적인 사용 손모까지 임차인에게 전가할 수 있어 위험합니다.", ["수리비", "전액", "임차인"]),
+        ("CLAUSE_LATE_RETURN", "보증금 반환 지연 가능 특약", "보증금 반환 시점을 과도하게 늦추는 문구는 반환 위험을 키울 수 있습니다.", ["보증금", "반환", "이후"]),
+        ("CLAUSE_NO_OWNER_RESP", "임대인 책임 제한 특약", "권리 변동이나 하자에 대한 임대인 책임을 배제하는 문구는 위험합니다.", ["책임지지", "권리", "변동"]),
+    ]
+    for code, title, description, tokens in risky_patterns:
+        if all(token in joined for token in tokens):
+            findings.append(RiskFinding(code=code, title=title, severity="HIGH", score_delta=15, description=description, evidence=[str(term) for term in terms], required_action="특약 삭제 또는 책임 범위를 명확히 제한하는 수정 문구를 요청하세요.", source="special_clause_analyzer:fallback"))
+            revisions.append(f"{title}: 임차인의 통상 사용으로 인한 손모는 제외하고, 임대인의 수선 의무와 보증금 반환 기한을 명확히 쓰는 방향으로 수정 권장")
+    return findings, revisions
+
+
+def _revisions_from_findings(findings: list[RiskFinding]) -> list[str]:
+    revisions: list[str] = []
+    for finding in findings:
+        if finding.required_action:
+            revisions.append(f"{finding.title}: {finding.required_action}")
+        else:
+            revisions.append(f"{finding.title}: RAG 근거를 바탕으로 해당 특약의 삭제 또는 책임 범위 명확화를 요청하세요.")
+    return revisions
+
+
+def _fallback_missing_defensive_clauses(joined_terms: str) -> list[RiskFinding]:
+    if "잔금" in joined_terms and "권리변동" in joined_terms:
+        return []
+    return [
+        RiskFinding(
+            code="MISSING_NO_NEW_LIEN",
+            title="잔금 전후 권리변동 금지 특약 부족",
+            severity="MEDIUM",
+            score_delta=10,
+            description="잔금일 전후 임대인이 근저당권 등 새로운 권리를 설정하지 않는다는 방어 특약이 보이지 않습니다.",
+            required_action="잔금일 다음날까지 근저당권 등 제한물권을 설정하지 않는다는 특약을 추가 검토하세요.",
+            source="special_clause_analyzer:fallback",
+        )
+    ]
+
+
+def _finding_from_llm(item: dict[str, Any], terms: list[Any]) -> RiskFinding | None:
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if not title or not description:
+        return None
+    severity = str(item.get("severity") or "MEDIUM").upper()
+    if severity not in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        severity = "MEDIUM"
+    score_delta = _safe_int(item.get("score_delta"), 10)
+    evidence = item.get("evidence")
+    evidence_list = [str(value) for value in evidence] if isinstance(evidence, list) else [str(term) for term in terms]
+    return RiskFinding(
+        code=str(item.get("code") or _slug_code(title)),
+        title=title,
+        severity=severity,  # type: ignore[arg-type]
+        score_delta=max(0, min(score_delta, 25)),
+        description=description,
+        evidence=evidence_list,
+        required_action=str(item.get("required_action") or "계약 전 해당 특약의 삭제 또는 수정을 요청하세요."),
+        source="special_clause_analyzer:rag_llm",
     )
 
 
-def contract_supervisor_node(state: DiagnosisState) -> DiagnosisState:
-    next_state = _base_state(state)
-    if "diagnosis_plan" not in next_state:
-        field_validation = next_state.get("field_validation")
-        missing = field_validation.missing_fields if field_validation else []
-        plan = run_contract_supervisor_agent(next_state.get("contract_fields", {}), missing)
-        next_state["diagnosis_plan"] = plan
-        next_state["pending_tasks"] = list(plan.pending_tasks)
-        next_state["completed_tasks"] = []
-        next_state["review_count"] = 0
-        next_state["max_review_count"] = 2
-        next_state["agent_trace"].append(asdict(_trace("contract_supervisor_agent", "build_v7_task_queue", {"missing_fields": missing}, asdict(plan))))
-
-    next_task = _next_pending_task(next_state)
-    next_state["current_task"] = next_task
-    next_state["current_agent"] = TASK_AGENT_MAP.get(next_task or "", None)
-    next_state["review_count"] = 0
-    next_state["agent_trace"].append({"agent": "contract_supervisor", "action": "select_next_task", "inputs": {}, "outputs": {"current_task": next_task, "current_agent": next_state.get("current_agent")}})
-    return next_state
-
-
-def special_clause_agent_node(state: DiagnosisState) -> DiagnosisState:
-    return _store_task_result(state, run_special_clause_agent(state.get("contract_fields", {})))
-
-
-def ownership_risk_agent_node(state: DiagnosisState) -> DiagnosisState:
-    return _store_task_result(state, run_ownership_risk_agent(state.get("contract_fields", {}), state.get("registry_fields")))  # type: ignore[arg-type]
-
-
-def market_risk_agent_node(state: DiagnosisState) -> DiagnosisState:
-    return _store_task_result(state, run_market_risk_agent(state.get("contract_fields", {})))
-
-
-def insurance_risk_agent_node(state: DiagnosisState) -> DiagnosisState:
-    return _store_task_result(state, run_insurance_risk_agent(state.get("contract_fields", {})))
-
-
-def required_check_agent_node(state: DiagnosisState) -> DiagnosisState:
-    return _store_task_result(state, run_required_check_agent(state.get("contract_fields", {})))
-
-
-def legal_basis_agent_node(state: DiagnosisState) -> DiagnosisState:
-    return _store_task_result(state, run_legal_basis_agent(state.get("contract_fields", {}), state.get("task_results", {})))
-
-
-def contract_review_node(state: DiagnosisState) -> DiagnosisState:
-    task = state.get("current_task")
-    result = state.get("task_results", {}).get(task or "")
-    claims = result.claims if result else []
-    evidence_refs = result.evidence_refs if result else []
-    graph_context = result.graph_context if result else []
-    review = review_agent_output(
-        current_task=task,
-        current_agent=state.get("current_agent"),
-        claims=claims,
-        evidence_refs=evidence_refs,
-        graph_context=graph_context,
-        draft_answer="\n".join(result.legal_points) if result else "",
-        mode="diagnosis",
-    )
-    task_results = dict(state.get("task_results", {}))
-    if result:
-        result.review_status = review.status.value
-        task_results[result.task] = result
-    review_count = int(state.get("review_count", 0))
-    if review.status != ReviewStatus.PASS:
-        review_count += 1
-    completed = list(state.get("completed_tasks", []))
-    if review.status == ReviewStatus.PASS and task and task not in completed:
-        completed.append(task)
-    return _merge(
-        state,
-        review_result=review,
-        review_count=review_count,
-        completed_tasks=completed,
-        task_results=task_results,
-        trace=_trace("contract_review_node", "structured_review", {"task": task}, asdict(review)),
+def _missing_from_llm(item: dict[str, Any]) -> RiskFinding | None:
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if not title or not description:
+        return None
+    severity = str(item.get("severity") or "MEDIUM").upper()
+    if severity not in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        severity = "MEDIUM"
+    return RiskFinding(
+        code=str(item.get("code") or _slug_code(title).replace("CLAUSE_", "MISSING_")),
+        title=title,
+        severity=severity,  # type: ignore[arg-type]
+        score_delta=max(0, min(_safe_int(item.get("score_delta"), 10), 20)),
+        description=description,
+        evidence=[],
+        required_action=str(item.get("required_action") or "계약 전 해당 방어 특약 추가를 요청하세요."),
+        source="special_clause_analyzer:rag_llm",
     )
 
 
-def extra_rag_search_node(state: DiagnosisState) -> DiagnosisState:
-    task = state.get("current_task")
-    result = state.get("task_results", {}).get(task or "")
-    query = state.get("review_result").missing_evidence_query if state.get("review_result") else None  # type: ignore[union-attr]
-    pack = search_legal_basis_rag(query or task or "전세계약 위험 추가 근거", top_k=5)
-    additional = normalize_evidence_refs([
-        {
-            "source_id": context.source_id,
-            "title": context.title,
-            "doc_type": context.doc_type,
-            "score": context.score,
-            "chunk_text": context.text,
-            "metadata": context.metadata,
-        }
-        for context in pack.contexts
-    ])
-    task_results = dict(state.get("task_results", {}))
-    if result:
-        result.evidence_refs = merge_evidence_refs(result.evidence_refs, additional, current_task=task)
-        result.graph_context = merge_graph_context(result.graph_context, pack.graph_context)
-        result.status = "PARTIAL"
-        task_results[result.task] = result
-    return _merge(state, task_results=task_results, trace=_trace("extra_rag_search", "merge_evidence_then_retry_agent", {"task": task}, {"added": len(additional)}))
-
-
-def graph_context_node(state: DiagnosisState) -> DiagnosisState:
-    task = state.get("current_task")
-    result = state.get("task_results", {}).get(task or "")
-    query = state.get("review_result").graph_context_query if state.get("review_result") else None  # type: ignore[union-attr]
-    pack = search_legal_basis_rag(query or task or "전세계약 관계 그래프 context", top_k=5)
-    task_results = dict(state.get("task_results", {}))
-    if result:
-        result.graph_context = merge_graph_context(result.graph_context, pack.graph_context)
-        result.status = "PARTIAL"
-        task_results[result.task] = result
-    return _merge(state, task_results=task_results, trace=_trace("graph_context_node", "merge_graph_context_then_retry_or_review", {"task": task}, {"graph_context_added": len(pack.graph_context)}))
-
-
-def safe_contract_fallback_node(state: DiagnosisState) -> DiagnosisState:
-    level = _fallback_level(state)
-    task = state.get("current_task")
-    completed = list(state.get("completed_tasks", []))
-    if task and task not in completed:
-        completed.append(task)
-    safe_fallback = {
-        "status": "SAFE_FALLBACK",
-        "fallback_level": level,
-        "reason": state.get("review_result").reason if state.get("review_result") else "review could not pass safely",  # type: ignore[union-attr]
-        "recommended_next_step": _fallback_next_step(level),
-        "task": task,
-    }
-    return _merge(
-        state,
-        fallback_level=level,
-        safe_fallback=safe_fallback,
-        completed_tasks=completed,
-        trace=_trace("safe_contract_fallback", "mark_task_fallback", {"task": task}, safe_fallback),
+def _context_text(context_pack: ContextPack) -> str:
+    if not context_pack.contexts:
+        return "검색된 RAG 근거가 없습니다."
+    return "\n\n".join(
+        f"[{idx}] {ctx.title} ({ctx.doc_type}, score={ctx.score})\n{ctx.text}"
+        for idx, ctx in enumerate(context_pack.contexts, 1)
     )
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _slug_code(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.upper())
+    return f"CLAUSE_{cleaned[:40].strip('_') or 'RISK'}"
+
+
+def market_analysis_node(state: DiagnosisState) -> DiagnosisState:
+    analysis, findings = analyze_market(state.get("contract_fields", {}))
+    return _merge(state, market_analysis=analysis, market_findings=findings, trace=_trace("Market Analyzer Agent", "compare_jeonse_and_sale_data", asdict(analysis), {"finding_count": len(findings)}))
+
+
+def required_check_node(state: DiagnosisState) -> DiagnosisState:
+    fields = state.get("contract_fields", {})
+    query = f"전세계약서만 입력된 상태에서 추가 확인이 필요한 위험 항목. 주소={fields.get('address')} 유형={fields.get('housing_type')}"
+    context_pack = adaptive_rag("required_check_analysis", query, filters={"doc_type": ["사례집", "법령", "서식"]}, top_k=5)
+
+    findings = [
+        RiskFinding("REQUIRED_REGISTRY", "등기부 권리관계 확인 필요", "HIGH", 20, "계약서만으로는 근저당권, 압류, 가압류, 신탁 등 권리관계를 확인할 수 없습니다.", required_action="계약 직전 등기부등본 갑구/을구를 확인하세요.", source="required_check_analyzer"),
+        RiskFinding("REQUIRED_OWNER_MATCH", "임대인과 소유자 일치 확인 필요", "HIGH", 15, "계약서상 임대인이 실제 등기부 소유자인지 계약서만으로 확정할 수 없습니다.", required_action="등기부 소유자와 신분증/위임장을 대조하세요.", source="required_check_analyzer"),
+        RiskFinding("REQUIRED_TAX", "체납 세금 확인 필요", "MEDIUM", 10, "국세/지방세 체납은 보증금 회수 위험과 연결될 수 있으나 계약서만으로 알 수 없습니다.", required_action="납세증명서 또는 관련 확인 절차를 요청하세요.", source="required_check_analyzer"),
+    ]
+    if fields.get("housing_type") in {"단독다가구", "단독", "다가구"}:
+        findings.append(RiskFinding("REQUIRED_SENIOR_TENANTS", "다가구 선순위 보증금 확인 필요", "HIGH", 20, "단독/다가구는 다른 세입자의 선순위 보증금 규모가 중요하지만 계약서만으로 확인하기 어렵습니다.", required_action="전입세대확인서, 확정일자 부여 현황, 임대인 고지 내용을 확인하세요.", source="required_check_analyzer"))
+
+    packs = dict(state.get("context_packs", {}))
+    packs["required_check_analysis"] = context_pack
+    return _merge(state, context_packs=packs, required_check_findings=findings, trace=_trace("Required Check Analyzer Agent", "list_contract_only_unknown_risks", {}, {"finding_count": len(findings)}))
 
 
 def risk_judge_node(state: DiagnosisState) -> DiagnosisState:
     findings: list[RiskFinding] = []
-    blocked_tasks: list[str] = []
-    claims: list[Claim] = []
-    evidence_refs: list[dict[str, Any]] = []
-    graph_context: list[GraphContextItem] = []
-    legal_points: list[str] = []
-    for task, result in state.get("task_results", {}).items():
-        if result.status == "FAILED":
-            blocked_tasks.append(task)
-            continue
-        findings.extend(result.risk_items)
-        claims.extend(result.claims)
-        evidence_refs = merge_evidence_refs(evidence_refs, result.evidence_refs, current_task=task)
-        graph_context = merge_graph_context(graph_context, result.graph_context)
-        legal_points.extend(result.legal_points)
+    findings.extend(state.get("clause_findings", []))
+    findings.extend(state.get("missing_defensive_clauses", []))
+    findings.extend(state.get("market_findings", []))
+    findings.extend(state.get("required_check_findings", []))
+
     score = min(100, sum(max(0, finding.score_delta) for finding in findings))
-    if blocked_tasks and score < 40:
-        score = 40
-    level = "CRITICAL" if score >= 75 else ("HIGH" if score >= 50 else ("MEDIUM" if score >= 25 else "LOW"))
-    return _merge(
-        state,
-        risk_findings=findings,
-        risk_score=score,
-        risk_level=level,
-        claims=claims,
-        evidence_refs=evidence_refs,
-        graph_context=graph_context,
-        legal_points=legal_points,
-        trace=_trace("risk_judge", "aggregate_agent_results", {"task_count": len(state.get("task_results", {}))}, {"risk_score": score, "risk_level": level, "blocked_tasks": blocked_tasks}),
-    )
+    if score >= 75:
+        level = "CRITICAL"
+    elif score >= 50:
+        level = "HIGH"
+    elif score >= 25:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    return _merge(state, risk_findings=findings, risk_score=score, risk_level=level, trace=_trace("Risk Judge Agent", "aggregate_rule_based_score", {"finding_count": len(findings)}, {"risk_score": score, "risk_level": level}))
 
 
 def report_writer_node(state: DiagnosisState) -> DiagnosisState:
-    task_results = state.get("task_results", {})
-    recommendations: list[str] = []
-    missing_checks: list[dict[str, Any]] = []
-    for result in task_results.values():
-        recommendations.extend(result.recommendations)
-        missing_checks.extend(result.missing_checks)
-    report_trace = _trace("report_writer", "format_v7_diagnosis_report", {}, {"task_count": len(task_results)})
-    full_trace = list(state.get("agent_trace", [])) + [asdict(report_trace)]
+    context_pack = adaptive_rag("report_generation", "전세계약 위험 진단 결과 리포트 작성", filters={"doc_type": ["사례집", "법령"]}, top_k=3)
+    packs = dict(state.get("context_packs", {}))
+    packs["report_generation"] = context_pack
+
+    report_trace = _trace("Report Writer Agent", "compose_user_report", {}, {"sections": ["title", "disclaimer", "risk_score", "risk_level", "contract_fields", "market_analysis", "findings", "recommended_revisions", "next_checks", "rag_references", "agent_trace"]})
+    full_trace = list(state.get("agent_trace", [])) + [report_trace]
+
     report = {
-        "title": "전세계약 PDF 위험 진단 리포트",
+        "title": "전세계약 위험 진단 리포트",
         "disclaimer": "본 결과는 법률 자문이 아니라 계약 전 위험 확인을 돕는 보조 정보입니다.",
-        "diagnosis_status": _diagnosis_status(state),
         "contract_file": state.get("contract_file"),
         "contract_source": "uploaded_file" if state.get("contract_file") else "mock_contract",
         "risk_score": state.get("risk_score", 0),
         "risk_level": state.get("risk_level", "UNKNOWN"),
-        "fallback_level": state.get("fallback_level"),
-        "safe_fallback": state.get("safe_fallback", {}),
         "contract_fields": state.get("contract_fields", {}),
-        "diagnosis_plan": _to_dict(state.get("diagnosis_plan")),
-        "task_results": {key: _to_dict(value) for key, value in task_results.items()},
-        "claims": [_to_dict(item) for item in state.get("claims", [])],
-        "legal_points": state.get("legal_points", []),
+        "market_analysis": asdict(state.get("market_analysis")) if state.get("market_analysis") else None,
         "findings": [asdict(finding) for finding in state.get("risk_findings", [])],
-        "recommended_revisions": list(dict.fromkeys(item for item in recommendations if item)),
-        "next_checks": list(dict.fromkeys([item.get("message", "") for item in missing_checks if item.get("message")])),
-        "missing_checks": missing_checks,
-        "evidence_refs": state.get("evidence_refs", []),
-        "graph_context": [_to_dict(item) for item in state.get("graph_context", [])],
-        "agent_trace": full_trace,
+        "recommended_revisions": state.get("recommended_revisions", []),
+        "next_checks": [finding.required_action for finding in state.get("risk_findings", []) if finding.required_action],
+        "rag_references": _summarize_context_packs(packs),
+        "agent_trace": [asdict(trace) for trace in full_trace],
     }
-    return _merge(state, report=report, trace=report_trace)
+    return _merge(state, context_packs=packs, report=report, trace=report_trace)
 
 
-def route_after_supervisor(state: DiagnosisState) -> str:
-    task = state.get("current_task")
-    if not task:
-        return "judge"
-    return task
-
-
-def route_after_review(state: DiagnosisState) -> str:
-    review = state.get("review_result")
-    status = review.status if review else ReviewStatus.FAIL
-    if status == ReviewStatus.PASS:
-        return "supervisor"
-    if int(state.get("review_count", 0)) >= int(state.get("max_review_count", 2)):
-        return "fallback"
-    if status == ReviewStatus.NEED_MORE_EVIDENCE:
-        return "extra_rag"
-    if status == ReviewStatus.NEED_GRAPH_CONTEXT:
-        return "graph_context"
-    if status == ReviewStatus.REVISION_REQUIRED:
-        return state.get("current_task") or "fallback"
-    return "fallback"
-
-
-def route_after_extra_rag(state: DiagnosisState) -> str:
-    return state.get("current_task") or "fallback"
-
-
-def route_after_graph_context(state: DiagnosisState) -> str:
-    return state.get("current_task") or "fallback"
-
-
-def _store_task_result(state: DiagnosisState, result: TaskResult) -> DiagnosisState:
-    task_results = dict(state.get("task_results", {}))
-    task_results[result.task] = result
-    return _merge(
-        state,
-        current_task=result.task,
-        current_agent=result.agent,
-        task_results=task_results,
-        trace=_trace(result.agent, "run_v7_task_agent", {"task": result.task}, _task_summary(result)),
-    )
-
-
-def _next_pending_task(state: DiagnosisState) -> str | None:
-    completed = set(state.get("completed_tasks", []))
-    for task in state.get("pending_tasks", []):
-        if task not in completed:
-            return task
-    return None
-
-
-def _diagnosis_status(state: DiagnosisState) -> dict[str, Any]:
-    task_results = state.get("task_results", {})
-    blocked_reasons: list[str] = []
-    for task in state.get("pending_tasks", []):
-        result = task_results.get(task)
-        if result is None:
-            blocked_reasons.append(f"{task} did not run")
-        elif result.status in {"FAILED", "NOT_IMPLEMENTED"}:
-            blocked_reasons.append(f"{task} status={result.status}")
-    if state.get("fallback_level"):
-        blocked_reasons.append(f"safe fallback used: {state.get('fallback_level')}")
-    return {
-        "complete": not blocked_reasons and not state.get("fallback_level"),
-        "blocked_reasons": blocked_reasons,
-        "fallback_level": state.get("fallback_level"),
-        "fallback_policy": "SAFE_FALLBACK includes fallback_level when review cannot pass.",
-    }
-
-
-def _fallback_level(state: DiagnosisState) -> str:
-    task = str(state.get("current_task") or "")
-    if task in {"ownership_risk", "market_risk", "insurance_risk"}:
-        return "HIGH"
-    if task in {"legal_basis", "required_check"}:
-        return "MEDIUM"
-    return "LOW"
-
-
-def _base_state(state: DiagnosisState) -> DiagnosisState:
-    next_state: DiagnosisState = dict(state)
-    next_state.setdefault("agent_trace", [])
-    next_state.setdefault("errors", [])
-    next_state.setdefault("missing_inputs", [])
-    next_state.setdefault("context_packs", {})
-    next_state.setdefault("task_results", {})
-    next_state.setdefault("pending_tasks", [])
-    next_state.setdefault("completed_tasks", [])
-    next_state.setdefault("review_count", 0)
-    next_state.setdefault("max_review_count", 2)
-    next_state.setdefault("claims", [])
-    next_state.setdefault("legal_points", [])
-    next_state.setdefault("evidence_refs", [])
-    next_state.setdefault("graph_context", [])
-    next_state.setdefault("safe_fallback", {})
-    return next_state
-
-
-def _fallback_next_step(level: str) -> str:
-    if level == "HIGH":
-        return "핵심 근거 검증이 부족하므로 추가 서류 확인 또는 전문가 상담을 우선 권장합니다."
-    if level == "MEDIUM":
-        return "부족한 근거 자료를 보완한 뒤 해당 위험 항목을 다시 검토해야 합니다."
-    return "일부 근거가 부족하므로 확인 가능한 자료를 추가로 대조해야 합니다."
-
-
-def _task_summary(result: TaskResult) -> dict[str, Any]:
-    return {
-        "task": result.task,
-        "status": result.status,
-        "claim_count": len(result.claims),
-        "legal_point_count": len(result.legal_points),
-        "risk_count": len(result.risk_items),
-        "recommendation_count": len(result.recommendations),
-        "evidence_count": len(result.evidence_refs),
-        "graph_context_count": len(result.graph_context),
-        "missing_check_count": len(result.missing_checks),
-    }
+def _summarize_context_packs(packs: dict[str, ContextPack]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for task_type, pack in packs.items():
+        for context in pack.contexts:
+            refs.append({"task_type": task_type, "title": context.title, "doc_type": context.doc_type, "source_id": context.source_id, "score": context.score})
+    return refs
 
 
 def _merge(state: DiagnosisState, *, trace: AgentTrace | None = None, **updates: Any) -> DiagnosisState:
-    next_state: DiagnosisState = _base_state(state)
+    next_state: DiagnosisState = dict(state)
     next_state.update(updates)
     if trace:
         traces = list(next_state.get("agent_trace", []))
-        traces.append(asdict(trace))
+        traces.append(trace)
         next_state["agent_trace"] = traces
     return next_state
 
@@ -423,11 +286,4 @@ def _trace(agent: str, action: str, inputs: dict[str, Any], outputs: dict[str, A
     return AgentTrace(agent=agent, action=action, inputs=inputs, outputs=outputs)
 
 
-def _to_dict(value: Any) -> Any:
-    if is_dataclass(value):
-        return asdict(value)
-    if isinstance(value, dict):
-        return {key: _to_dict(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_to_dict(item) for item in value]
-    return value
+

@@ -357,18 +357,18 @@ def render():
         with info_r:
             st.number_input("보증금 (만원)", value=25000, step=500, format="%d")
 
-        doc_l, doc_r = st.columns(2)
-        with doc_l:
+        pdf_l, pdf_r = st.columns(2)
+        with pdf_l:
             st.file_uploader(
-                "등기부등본 (.docx)",
-                type=["docx"],
-                help="등기소·정부24에서 발급한 등기부등본을 docx 파일로 첨부하세요.",
+                "등기부등본 PDF",
+                type=["pdf"],
+                help="등기소·정부24에서 발급한 PDF를 첨부하세요.",
             )
-        with doc_r:
+        with pdf_r:
             st.file_uploader(
-                "임대차계약서 (.docx)",
-                type=["docx"],
-                help="특약 조항이 모두 포함된 임대차계약서를 docx 파일로 첨부하세요.",
+                "임대차계약서 PDF",
+                type=["pdf", "jpg", "png"],
+                help="특약 조항이 모두 포함된 전체 페이지를 업로드해 주세요.",
             )
 
         st.markdown(

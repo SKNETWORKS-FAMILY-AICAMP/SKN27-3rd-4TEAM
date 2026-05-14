@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.api.routes.health import router as health_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.diagnosis import router as diagnosis_router
+from app.api.routes.contracts import router as contracts_router
 
 settings = get_settings()
 
@@ -70,6 +71,7 @@ app.add_middleware(
 app.include_router(health_router,    prefix="/api/v1",         tags=["헬스체크"])
 app.include_router(chat_router,      prefix="/api/v1/chat",    tags=["채팅"])
 app.include_router(diagnosis_router, prefix="/api/v1/diagnosis", tags=["계약서 진단"])
+app.include_router(contracts_router, prefix="/api/v1/contracts", tags=["계약서 업로드"])
 
 
 if __name__ == "__main__":

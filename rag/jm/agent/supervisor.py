@@ -16,21 +16,27 @@ from .tools import search_documents
 
 
 class AgentState(TypedDict):
+    """Supervisor 그래프에서 사용하는 상태 타입입니다."""
+
     messages: Annotated[List[BaseMessage], operator.add]
     next: str
 
 
 def create_supervisor(llm: ChatOpenAI, tools: list):
+    """주어진 LLM/도구 목록으로 supervisor 노드를 생성합니다."""
+
     tool_names = [t.name for t in tools]
     options = ["FINISH"] + tool_names
 
     system_prompt = (
-        "당신은 사용자의 질문을 해결하기 위해 적절한 도구를 선택하는 관리자입니다.\n"
-        "문서 근거가 필요하면 search_documents를 사용하고, 충분한 정보가 있으면 FINISH로 종료하세요.\n"
-        f"선택 가능한 항목: {options}"
+        "너는 사용자의 질문을 해결하기 위해 적절한 도구를 선택하는 관리자야.\n"
+        "문서 근거가 필요하면 search_documents를 호출하고, 충분한 정보가 있으면 FINISH로 종료해.\n"
+        f"선택 가능한 옵션: {options}"
     )
 
     def supervisor_node(state: AgentState):
+        """현재 메시지를 보고 다음에 실행할 도구를 결정합니다."""
+
         messages = [{"role": "system", "content": system_prompt}] + state["messages"]
         response = llm.bind_tools(tools).invoke(messages)
 
@@ -49,10 +55,9 @@ def create_supervisor(llm: ChatOpenAI, tools: list):
 
 
 def get_agent_graph():
-    cfg = load_config()
-    if cfg.llm_provider != "openai":
-        raise ValueError("agent 명령은 현재 OpenAI tool-calling 모델만 지원합니다. 무료 실행은 generate + ollama를 사용하세요.")
+    """Supervisor + ToolNode로 구성된 LangGraph를 생성합니다."""
 
+    cfg = load_config()
     llm = ChatOpenAI(model=cfg.llm_model, temperature=0)
     tools = [search_documents]
 
@@ -73,6 +78,8 @@ def get_agent_graph():
 
 
 def run_agent(query: str):
+    """Supervisor 그래프를 실행해 최종 답변만 반환합니다."""
+
     graph = get_agent_graph()
     final_state = graph.invoke({"messages": [HumanMessage(content=query)]})
     return final_state["messages"][-1].content

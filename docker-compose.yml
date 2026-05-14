@@ -1,7 +1,6 @@
 services:
-
   # =============================================
-  # PostgreSQL DB 컨테이너
+  # PostgreSQL DB 컨테이너 (pgvector 포함 이미지)
   # =============================================
   db:
     # pgvector extension is bundled in this image
@@ -72,7 +71,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./rag/scripts:/app/scripts
       - ./docs:/app/docs
     depends_on:
       db:
@@ -80,7 +78,7 @@ services:
     command: ["python", "rag/scripts/preprocess_load.py"]
 
   # =============================================
-  # 배치 컨테이너 (매주 월요일 오전 6시 자동 실행)
+  # 배치 컨테이너 (정기 실행)
   # =============================================
   batch:
     build: .

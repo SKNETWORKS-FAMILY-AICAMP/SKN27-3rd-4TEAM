@@ -1,5 +1,5 @@
 # rag/jm/agent/multi_agent.py
-# DB 분석, RAG 문서 검색, 위험도 설명을 역할별 에이전트로 분리합니다.
+# DB 분석 + RAG 문서 검색 결과를 결합해서 최종 답변을 생성하는 멀티 에이전트 로직입니다.
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import psycopg2
-import requests
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -18,7 +17,7 @@ from ..retrieval.search import SearchHit, search
 
 @dataclass(frozen=True)
 class DbAnalysisResult:
-    """DB 분석 에이전트가 만든 정형 데이터 요약 결과입니다."""
+    """DB 분석 에이전트가 만든 요약/지표 결과입니다."""
 
     summary: str
     metrics: Dict[str, Any]
@@ -26,7 +25,7 @@ class DbAnalysisResult:
 
 @dataclass(frozen=True)
 class RagAgentResult:
-    """RAG 문서 에이전트가 찾은 문서 근거와 요약입니다."""
+    """RAG 문서 에이전트가 찾은 근거(검색 결과)와 요약입니다."""
 
     summary: str
     hits: List[SearchHit]
@@ -34,7 +33,7 @@ class RagAgentResult:
 
 @dataclass(frozen=True)
 class MultiAgentResult:
-    """멀티에이전트 전체 실행 결과입니다."""
+    """멀티 에이전트 전체 실행 결과입니다."""
 
     answer: str
     db_analysis: DbAnalysisResult
@@ -42,7 +41,7 @@ class MultiAgentResult:
 
 
 def _connect_db():
-    """환경변수 설정을 기반으로 PostgreSQL 연결을 생성합니다."""
+    """환경 설정값을 기반으로 PostgreSQL 연결을 생성합니다."""
 
     cfg = load_config()
     return psycopg2.connect(
@@ -55,7 +54,9 @@ def _connect_db():
 
 
 def db_analysis_agent(query: str) -> DbAnalysisResult:
-    """정형 DB에서 거래 건수와 전세가율 상위 위험 구간을 조회합니다."""
+    """DB에서 기초 통계(건수/상위 위험 구간 등)를 조회해 요약합니다."""
+
+    _ = query  # 현재는 쿼리와 무관하게 기본 통계만 계산합니다.
 
     with _connect_db() as conn:
         with conn.cursor() as cur:
@@ -103,13 +104,13 @@ def db_analysis_agent(query: str) -> DbAnalysisResult:
 
 
 def rag_document_agent(query: str, k: int = 5) -> RagAgentResult:
-    """질문과 관련된 RAG 문서 chunk를 검색하고 출처 요약을 만듭니다."""
+    """질문과 관련된 RAG 문서 청크를 검색하고, 출처 요약을 만듭니다."""
 
     hits = search(query=query, k=k)
     if not hits:
         return RagAgentResult(summary="질문과 관련된 RAG 문서를 찾지 못했습니다.", hits=[])
 
-    sources = []
+    sources: list[str] = []
     for hit in hits:
         metadata = hit.metadata
         file_name = metadata.get("file_name") or metadata.get("source") or "unknown"
@@ -121,21 +122,21 @@ def rag_document_agent(query: str, k: int = 5) -> RagAgentResult:
 
 
 def _format_hits(hits: List[SearchHit]) -> str:
-    """LLM 프롬프트에 넣기 좋은 형태로 검색 결과를 합칩니다."""
+    """LLM 프롬프트에 넣기 좋은 형태로 검색 결과를 포맷합니다."""
 
     return "\n\n".join([f"[문서 {i + 1}]\n{hit.content}" for i, hit in enumerate(hits)])
 
 
 def _generate_with_openai(query: str, db_result: DbAnalysisResult, rag_result: RagAgentResult) -> str:
-    """OpenAI 모델로 DB 분석과 RAG 근거를 결합한 최종 답변을 생성합니다."""
+    """OpenAI 모델로 DB 분석 + RAG 근거를 결합해 최종 답변을 생성합니다."""
 
     cfg = load_config()
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "당신은 전세사기 위험 분석을 돕는 설명 에이전트입니다. "
-                "DB 분석 결과와 RAG 문서 근거를 함께 사용해 답변하세요.",
+                "너는 전세사기 위험을 설명하는 전문가 에이전트야. "
+                "DB 분석 결과와 RAG 문서 근거를 함께 사용해서 답해줘.",
             ),
             (
                 "human",
@@ -155,37 +156,14 @@ def _generate_with_openai(query: str, db_result: DbAnalysisResult, rag_result: R
     )
 
 
-def _generate_with_ollama(query: str, db_result: DbAnalysisResult, rag_result: RagAgentResult) -> str:
-    """Ollama 로컬 모델로 DB 분석과 RAG 근거를 결합한 최종 답변을 생성합니다."""
-
-    cfg = load_config()
-    prompt = (
-        "당신은 전세사기 위험 분석을 돕는 설명 에이전트입니다.\n"
-        "DB 분석 결과와 RAG 문서 근거를 함께 사용해 답변하세요.\n\n"
-        f"[질문]\n{query}\n\n"
-        f"[DB 분석]\n{db_result.summary}\n{db_result.metrics}\n\n"
-        f"[RAG 근거]\n{rag_result.summary}\n{_format_hits(rag_result.hits)}"
-    )
-    response = requests.post(
-        f"{cfg.ollama_base_url.rstrip('/')}/api/generate",
-        json={"model": cfg.llm_model, "prompt": prompt, "stream": False},
-        timeout=120,
-    )
-    response.raise_for_status()
-    return response.json().get("response", "").strip()
-
-
 def risk_explanation_agent(query: str, db_result: DbAnalysisResult, rag_result: RagAgentResult) -> str:
-    """설정된 LLM 제공자에 따라 최종 위험 설명 에이전트를 실행합니다."""
+    """OpenAI 모델로 최종 답변 생성 에이전트를 실행합니다."""
 
-    cfg = load_config()
-    if cfg.llm_provider == "ollama":
-        return _generate_with_ollama(query, db_result, rag_result)
     return _generate_with_openai(query, db_result, rag_result)
 
 
 def run_multi_agent(query: str, k: int = 5) -> MultiAgentResult:
-    """DB 분석, RAG 검색, 최종 설명 생성을 순차적으로 실행합니다."""
+    """DB 분석 → RAG 검색 → 최종 답변 생성을 순차적으로 실행합니다."""
 
     db_result = db_analysis_agent(query)
     rag_result = rag_document_agent(query, k=k)

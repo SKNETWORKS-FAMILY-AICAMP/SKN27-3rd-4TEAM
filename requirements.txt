@@ -64,7 +64,13 @@ xgboost==3.2.0
 lightgbm==4.6.0
 matplotlib==3.10.1
 seaborn==0.13.2
+plotly>=5.24.1,<7.0.0
 joblib==1.4.2
+# =====================
+# Evaluation / Data
+# =====================
+ragas==0.4.3
+datasets>=4.0.0,<5.0.0
 
 # =====================
 # Notebook / Tools
@@ -75,5 +81,5 @@ jupyter
 # =====================
 # Embedding / Deep Learning (CPU)
 # =====================
-torch==2.2.0+cpu
+torch>=2.2.0,<3.0.0
 sentence-transformers==5.1.2
