@@ -1,47 +1,33 @@
-# =====================
+# LLM / Agent
+langchain>=0.3.0
+langchain-openai>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.3.0
+openai>=1.0.0
+
+# PDF / DOCX
+pymupdf>=1.25.0
+python-docx>=1.0.0
+
+# DB (pgvector)
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+pgvector>=0.3.0
+
 # Data
-# =====================
-pandas==2.2.3
-numpy==2.2.5
-requests==2.32.5
-beautifulsoup4==4.13.4
-python-dateutil==2.9.0
-PublicDataReader==1.0.3
+pandas>=2.0.0
+numpy>=1.24.0
 
-# =====================
-# ML
-# =====================
-scikit-learn==1.6.1
-xgboost==3.2.0
-lightgbm==4.6.0
-matplotlib==3.10.1
-seaborn==0.13.2
-joblib==1.4.2
+# Embeddings
+sentence-transformers>=3.0.0
 
-# =====================
-# RAG / PDF
-# =====================
-langchain==1.2.17
-langchain-community==0.4.1
-langchain-openai==1.2.1
-langchain-pymupdf4llm==0.5.0
-openai==2.36.0
-chromadb==0.6.3
-tiktoken==0.9.0
-pypdf==5.4.0
-pdfplumber==0.11.4
-pymupdf4llm==0.1.9
+# Graph DB
+neo4j>=5.0.0
 
-# =====================
-# DB
-# =====================
-sqlalchemy==2.0.40
-psycopg2-binary==2.9.10
-alembic==1.15.2
+# Visualization
+plotly>=5.0.0
 
-# =====================
 # App
-# =====================
-streamlit==1.57.0
-python-dotenv==1.1.0
-tqdm==4.67.3
+streamlit>=1.30.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0

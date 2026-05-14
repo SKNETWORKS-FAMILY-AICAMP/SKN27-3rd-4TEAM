@@ -10,12 +10,14 @@ __pycache__/
 .venv
 venv/
 
-# data
+# 데이터
 data/
 *.csv
-*.json
 *.parquet
 *.pkl
+
+# PDF 원본
+docs/pdf/
 *.pdf
 *.hwp
 
@@ -24,15 +26,14 @@ data/
 .idea/
 *.DS_Store
 
-# API 키, secrets
-
-# ML 
-
 # 로그
 logs/
 *.log
 
-# build 
+# build
 build/
 dist/
 *.egg-info/
+
+# 진단 결과
+results/
