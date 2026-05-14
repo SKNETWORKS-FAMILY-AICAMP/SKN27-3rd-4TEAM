@@ -31,9 +31,12 @@ def _api_base_urls() -> list[str]:
             normalized = value.rstrip("/")
             if normalized and normalized not in urls:
                 urls.append(normalized)
+<<<<<<< HEAD
     # Fallback to 8001 if not already present
     if "http://localhost:8001" not in urls:
         urls.append("http://localhost:8001")
+=======
+>>>>>>> 816cdc9260b9f974b7365444c0fe2cf241ba6318
     return urls
 
 
@@ -154,6 +157,7 @@ def ask_backend(question: str) -> dict[str, Any]:
             "message": message,
             "history": _history_for_api(),
         },
+<<<<<<< HEAD
     )
 
 
@@ -268,9 +272,45 @@ def render() -> None:
         st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
         status = "safe" if st.session_state.get("backend_ready") else "caution"
         render_status_pill(status, 100 if status == "safe" else 60, "Backend")
+=======
+    )
 
-    section_divider()
 
+def _format_diagnosis_for_prompt(result: dict[str, Any]) -> str:
+    risk_factors = result.get("risk_factors") or []
+    factor_lines = []
+    for item in risk_factors[:6]:
+        factor_lines.append(
+            "- "
+            + str(item.get("category") or item.get("factor_id") or "위험요소")
+            + ": "
+            + str(item.get("description") or "")
+            + " / 조치: "
+            + str(item.get("advice") or "")
+        )
+    return "\n".join(
+        [
+            f"위험점수: {result.get('risk_score')}",
+            f"위험등급: {result.get('risk_level')}",
+            f"요약: {result.get('summary')}",
+            "위험요소:",
+            *factor_lines,
+        ]
+    )
+
+>>>>>>> 816cdc9260b9f974b7365444c0fe2cf241ba6318
+
+def _references(result: dict[str, Any]) -> list[str]:
+    refs = []
+    for ref in result.get("references", [])[:6]:
+        title = str(ref.get("title") or "RAG 근거")
+        doc_type = str(ref.get("doc_type") or "문서")
+        score = ref.get("relevance_score")
+        suffix = f" · {score:.2f}" if isinstance(score, (int, float)) else ""
+        refs.append(f"{title} ({doc_type}{suffix})")
+    return refs
+
+<<<<<<< HEAD
     with st.container(border=True):
         st.markdown("### 계약서 파일")
         uploaded = st.file_uploader(
@@ -307,6 +347,116 @@ def render() -> None:
     section_divider()
     st.markdown("### 상담")
 
+=======
+
+def _assistant_message(answer: str, sources: list[str] | None = None) -> dict[str, Any]:
+    return {"role": "assistant", "content": answer, "sources": sources or []}
+
+
+def _render_message(message: dict[str, Any]) -> None:
+    content = str(message.get("content", ""))
+    if message.get("role") == "user":
+        st.markdown(f'<div class="chat-q">{html.escape(content)}</div>', unsafe_allow_html=True)
+        return
+
+    st.markdown(f'<div class="chat-a">{content}</div>', unsafe_allow_html=True)
+    sources = message.get("sources") or []
+    if sources:
+        refs = "".join(f'<span class="ref">{html.escape(str(source))}</span>' for source in sources)
+        st.markdown(f'<div class="rag-src"><b>근거 자료</b>{refs}</div>', unsafe_allow_html=True)
+
+
+def _risk_level_key(level: str | None, score: float | int | None) -> str:
+    text = str(level or "")
+    numeric = float(score or 0)
+    if "위험" in text or numeric >= 80:
+        return "danger"
+    if "주의" in text or numeric >= 60:
+        return "caution"
+    return "safe"
+
+
+def _render_diagnosis_summary(result: dict[str, Any]) -> None:
+    level = result.get("risk_level")
+    score = result.get("risk_score", 0)
+    factors = result.get("risk_factors") or []
+    render_status_pill(_risk_level_key(level, score), int(float(score or 0)), "계약서 위험도")
+    st.markdown(
+        f"""
+        <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:12px;
+                    padding:14px 16px;margin:10px 0 14px;color:var(--gray-900)">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+            <b>계약서 진단 결과</b>
+            <span style="font-weight:800">{html.escape(str(level))} · {score}점</span>
+          </div>
+          <div style="font-size:13px;color:var(--gray-700);line-height:1.55;margin-top:8px">
+            {html.escape(str(result.get("summary") or ""))}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    for item in factors[:4]:
+        st.markdown(
+            f"- **{item.get('category') or item.get('factor_id')}**: "
+            f"{item.get('description', '')}"
+        )
+
+
+def render() -> None:
+    law_banner(
+        "<b>전세 계약 상담</b> · 업로드한 계약서 진단 결과와 RAG 근거를 함께 참고합니다.",
+        pill="RAG 연결",
+    )
+
+    st.markdown("# 전세 계약서 법률 근거 기반 상담")
+    st.markdown(
+        '<p style="color:var(--gray-500);font-size:14px;margin-top:-8px">'
+        "질문은 RAG 채팅으로, 계약서 파일은 진단 agent 경로로 보냅니다.</p>",
+        unsafe_allow_html=True,
+    )
+
+    section_divider()
+
+    with st.container(border=True):
+        st.markdown("### 계약서 파일")
+        uploaded = st.file_uploader(
+            "계약서 업로드",
+            type=["pdf", "docx", "txt"],
+            label_visibility="collapsed",
+        )
+        diagnose_clicked = st.button(
+            "계약서 진단",
+            type="primary",
+            use_container_width=True,
+            disabled=uploaded is None,
+        )
+        if diagnose_clicked and uploaded is not None:
+            with st.spinner("계약서를 읽고 RAG 기반 진단을 실행하는 중입니다..."):
+                try:
+                    result = diagnose_contract(uploaded)
+                    st.session_state.diagnosis_context = result
+                    st.session_state.latest_diagnosis = result
+                    st.session_state.history_loaded = False
+                    st.session_state.backend_ready = True
+                    st.session_state.messages = [
+                        _assistant_message(
+                            "계약서 진단이 완료되었습니다. 이제 이 계약서를 기준으로 질문해 주세요.",
+                            _references(result),
+                        )
+                    ]
+                    st.rerun()
+                except Exception as exc:
+                    st.session_state.backend_ready = False
+                    st.error(f"계약서 진단 실패: {exc}")
+
+    if st.session_state.get("diagnosis_context"):
+        _render_diagnosis_summary(st.session_state.diagnosis_context)
+
+    section_divider()
+    st.markdown("### 상담")
+
+>>>>>>> 816cdc9260b9f974b7365444c0fe2cf241ba6318
     if "messages" not in st.session_state:
         st.session_state.messages = [
             _assistant_message(

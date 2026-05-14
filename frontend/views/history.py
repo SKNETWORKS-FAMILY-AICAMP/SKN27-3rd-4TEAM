@@ -387,9 +387,9 @@ def _history_css() -> str:
 
 def _init_state():
     if "history_records" not in st.session_state:
-        st.session_state.history_records = RECORDS
+        st.session_state.history_records = []
     if "history_source" not in st.session_state:
-        st.session_state.history_source = "demo"
+        st.session_state.history_source = "backend"
     if "history_api_error" not in st.session_state:
         st.session_state.history_api_error = None
     if "compare_set" not in st.session_state:
@@ -411,8 +411,8 @@ def _load_backend_records() -> None:
             st.session_state.history_source = "backend"
             st.session_state.history_api_error = None
     except requests.RequestException as exc:
-        st.session_state.history_records = RECORDS
-        st.session_state.history_source = "demo"
+        st.session_state.history_records = []
+        st.session_state.history_source = "error"
         st.session_state.history_api_error = str(exc)
 
 
