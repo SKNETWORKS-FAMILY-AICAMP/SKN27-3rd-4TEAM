@@ -1,11 +1,91 @@
 """상담 챗 (메인) — 진단 결과 + RAG 스타일 챗봇."""
 
+import os
+from html import escape
+
+import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from utils.components import (
     render_status_pill,
     law_banner,
     section_divider,
 )
+
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
+
+
+def upload_contract_to_backend(uploaded_file) -> dict:
+    """임대차계약서 파일을 백엔드 텍스트 추출 API로 전송한다."""
+    response = requests.post(
+        f"{BACKEND_BASE_URL}/api/v1/contracts/upload",
+        files={
+            "file": (
+                uploaded_file.name,
+                uploaded_file.getvalue(),
+                uploaded_file.type or "application/octet-stream",
+            )
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def query_rag_backend(question: str) -> dict | None:
+    """FastAPI RAG 챗봇 API에 질문을 보내고 실패하면 None을 반환한다."""
+    session_id = st.session_state.setdefault("chat_session_id", "streamlit-session")
+    history = [
+        {"role": message["role"], "content": message["content"]}
+        for message in st.session_state.get("messages", [])
+        if message.get("role") in {"user", "assistant"}
+    ][-8:]
+    try:
+        response = requests.post(
+            f"{BACKEND_BASE_URL}/api/v1/chat/query",
+            json={"session_id": session_id, "message": question, "history": history},
+            timeout=8,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    payload = response.json()
+    references = payload.get("references", [])
+    sources = [
+        reference.get("title") or reference.get("source_id") or "RAG 검색 결과"
+        for reference in references
+        if isinstance(reference, dict)
+    ]
+    return {"answer": payload.get("answer", ""), "sources": sources}
+
+
+def build_contract_doc_context(result: dict) -> dict:
+    """업로드 API 응답을 챗봇 문서 컨텍스트 형태로 변환한다."""
+    fields = result.get("parsed_fields", {})
+    summary_items = []
+    if fields.get("address"):
+        summary_items.append(f"주소: {fields['address']}")
+    if fields.get("deposit_amount") is not None:
+        summary_items.append(f"보증금: {fields['deposit_amount']:,}만원")
+    if fields.get("monthly_rent") is not None:
+        summary_items.append(f"월세: {fields['monthly_rent']:,}만원")
+    if fields.get("contract_start") or fields.get("contract_end"):
+        summary_items.append(f"계약기간: {fields.get('contract_start') or '?'} ~ {fields.get('contract_end') or '?'}")
+    if fields.get("special_terms"):
+        summary_items.append("특약사항 추출됨")
+
+    summary = " · ".join(summary_items) if summary_items else "계약서 텍스트 추출은 완료됐지만 핵심 필드는 추가 확인이 필요합니다."
+    keywords = [value for value in fields.values() if isinstance(value, str) and value][:5]
+    return {
+        "title": result.get("filename", "임대차계약서"),
+        "kind": "임대차계약서",
+        "summary": summary,
+        "keywords": keywords,
+        "contract_id": result.get("contract_id"),
+        "extracted_text": result.get("extracted_text", ""),
+        "parsed_fields": fields,
+    }
 
 
 # ─── 데모 RAG 응답 ──────────────────────────────────────
@@ -62,16 +142,59 @@ DEMO_REPLIES = [
 
 DEFAULT_REPLY = {
     "answer": (
-        "현재 매물(<b>종로구 명륜2가 35-12</b>)의 자료를 분석해 보면, "
-        "<b>전세가율 91%</b>, <b>선순위 근저당 ₩2.1억 미말소</b>, <b>신탁등기 의심</b> 등 "
-        "3가지 치명적인 위험 신호가 있습니다.<br/><br/>"
-        "구체적으로 어떤 부분을 알려드릴까요? 아래 빠른 질문을 이용하시거나 자유롭게 물어보세요."
+        "죄송합니다. 아직 답변하기 어려운 질문입니다.<br/><br/>"
+        "구체적으로 어떤 부분을 알려드릴까요? 위 빠른 질문을 이용하시거나 다시 질문해 주세요."
     ),
-    "sources": ["📄 등기부등본", "📋 계약서 초안", "🏠 종로구 실거래가"],
+    "sources": [],
 }
 
 
 LEVEL_KO = {"danger": "위험", "caution": "주의", "safe": "안전"}
+
+
+def reset_chat_state() -> None:
+    """상담 기준 자료가 바뀔 때 기존 메시지를 초기화한다."""
+    st.session_state.pop("messages", None)
+
+
+def render_chat_messages(messages: list[dict]) -> None:
+    """채팅 메시지를 한 화면 안의 넓은 로그 패널로 렌더링한다."""
+    rendered_messages = []
+    for message in messages:
+        if message["role"] == "user":
+            rendered_messages.append(f'<div class="chat-q"><b>나</b><span>{escape(message["content"])}</span></div>')
+            continue
+
+        refs = ""
+        if message.get("sources"):
+            chips = "".join(f'<span class="ref">{escape(source)}</span>' for source in message["sources"])
+            refs = f'<div class="rag-src"><b>근거 자료</b>{chips}</div>'
+        rendered_messages.append(f'<div class="chat-a">{message["content"]}{refs}</div>')
+
+    st.markdown(
+        f"""
+        <div class="chat-log-panel">
+          {''.join(rendered_messages)}
+          <div id="chat-bottom-anchor"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    components.html(
+        """
+        <script>
+          const anchor = window.parent.document.getElementById("chat-bottom-anchor");
+          if (anchor) {
+            const panel = anchor.closest(".chat-log-panel");
+            if (panel) {
+              panel.scrollTop = panel.scrollHeight;
+            }
+            anchor.scrollIntoView({ behavior: "smooth", block: "end" });
+          }
+        </script>
+        """,
+        height=0,
+    )
 
 
 def quick_questions_for(mode: str, ctx: dict | None) -> list[str]:
@@ -230,6 +353,59 @@ def find_reply(
     return base or DEFAULT_REPLY
 
 
+def answer_from_contract(question: str, ctx_doc: dict) -> dict:
+    """업로드된 계약서 추출 결과를 기반으로 프론트에서 1차 답변을 만든다."""
+    fields = ctx_doc.get("parsed_fields", {})
+    special_terms = fields.get("special_terms") or "추출된 특약사항이 없습니다."
+    extracted_text = ctx_doc.get("extracted_text", "")
+    question_text = question.lower()
+
+    if any(keyword in question_text for keyword in ["특약", "조항", "문구", "위험"]):
+        answer = (
+            "<b>업로드한 임대차계약서 기준으로 보면, 우선 특약사항을 집중 확인해야 합니다.</b><br/><br/>"
+            "추출된 특약사항은 다음과 같습니다.<br/>"
+            f"<div style='margin-top:8px;padding:12px;border-radius:10px;background:var(--gray-100)'>{escape(str(special_terms))}</div><br/>"
+            "특약에 근저당 말소, 보증보험 가입, 권리변동 금지, 전입신고·확정일자 보장 같은 문구가 없으면 "
+            "임차인 방어력이 약해질 수 있습니다. 특히 임대인에게 일방적으로 유리한 원상복구, 위약금, 보증금 반환 유예 조항은 다시 확인하는 게 좋습니다."
+        )
+    elif any(keyword in question_text for keyword in ["보증금", "전세금", "월세", "금액"]):
+        answer = (
+            "<b>계약서에서 추출된 금액 정보입니다.</b><br/><br/>"
+            f"보증금: <b>{fields.get('deposit_amount', '추출 필요')}</b>만원<br/>"
+            f"월세: <b>{fields.get('monthly_rent', '추출 필요')}</b>만원<br/><br/>"
+            "이 금액은 다음 단계에서 주변 매매가/전세가와 비교해서 전세가율 위험 판단에 사용하면 됩니다."
+        )
+    elif any(keyword in question_text for keyword in ["기간", "계약기간", "시작", "종료"]):
+        answer = (
+            "<b>계약 기간 추출 결과입니다.</b><br/><br/>"
+            f"시작일: <b>{fields.get('contract_start') or '추출 필요'}</b><br/>"
+            f"종료일: <b>{fields.get('contract_end') or '추출 필요'}</b><br/><br/>"
+            "계약기간이 비어 있거나 실제 합의 내용과 다르면 계약서 원문에서 다시 확인해야 합니다."
+        )
+    else:
+        preview = escape(extracted_text[:500]) if extracted_text else "추출된 원문 미리보기가 없습니다."
+        answer = (
+            f"<b>{escape(ctx_doc.get('title', '임대차계약서'))}</b>를 기준으로 답변할게요.<br/><br/>"
+            f"{escape(ctx_doc.get('summary', '계약서 핵심 정보가 일부 추출되었습니다.'))}<br/><br/>"
+            f"<details><summary>추출 원문 일부 보기</summary><div style='margin-top:8px'>{preview}</div></details><br/>"
+            "궁금한 항목을 특약, 보증금, 계약기간, 권리관계처럼 조금 더 구체적으로 물어보면 더 정확히 나눠서 설명할 수 있어요."
+        )
+
+    return {"answer": answer, "sources": [ctx_doc.get("title", "업로드 계약서")]}
+
+
+def generate_chat_reply(question: str, mode: str, ctx_doc: dict | None, ctx_prop: dict | None) -> dict:
+    """현재 상담 모드에 맞춰 백엔드 RAG 또는 로컬 컨텍스트 답변을 생성한다."""
+    if mode == "doc" and ctx_doc:
+        return answer_from_contract(question, ctx_doc)
+
+    backend_reply = query_rag_backend(question)
+    if backend_reply and backend_reply.get("answer"):
+        return backend_reply
+
+    return find_reply(question, ctx_doc=ctx_doc, ctx_prop=ctx_prop)
+
+
 # ─── 화면 ──────────────────────────────────────────────
 def render():
     # ─── 모드 결정 ───
@@ -261,7 +437,7 @@ def render():
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             if st.button("× 자료 해제", key="clear_ctx_doc", use_container_width=True):
                 del st.session_state.chat_context_doc
-                st.session_state.pop("messages", None)
+                reset_chat_state()
                 st.rerun()
     elif mode == "property":
         level_color = {"danger": "var(--red)", "caution": "var(--amber)", "safe": "var(--green)"}.get(ctx_prop["level"], "var(--gray-500)")
@@ -288,7 +464,7 @@ def render():
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             if st.button("× 매물 해제", key="clear_ctx_prop", use_container_width=True):
                 del st.session_state.chat_context_property
-                st.session_state.pop("messages", None)
+                reset_chat_state()
                 st.rerun()
 
     # 상단 법령 개정 알림
@@ -365,21 +541,39 @@ def render():
                 help="등기소·정부24에서 발급한 PDF를 첨부하세요.",
             )
         with pdf_r:
-            st.file_uploader(
+            lease_contract_file = st.file_uploader(
                 "임대차계약서 PDF",
-                type=["pdf", "jpg", "png"],
-                help="특약 조항이 모두 포함된 전체 페이지를 업로드해 주세요.",
+                type=["pdf", "docx", "txt"],
+                help="특약 조항이 모두 포함된 임대차계약서를 업로드해 주세요.",
             )
 
-        st.markdown(
-            """
-            <div style="background:var(--green-soft);border:1px solid #b8ead9;border-radius:12px;
-                        padding:12px 14px;margin-top:10px;font-size:13px;color:#005a3f">
-              ✓ 분석 완료 · 자세한 진단 결과·유사 사례는 <b>진단 기록 → 자세히</b>에서 확인하세요
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if lease_contract_file and st.button("임대차계약서 텍스트 추출", type="primary", use_container_width=True):
+            try:
+                with st.spinner("임대차계약서 내용을 추출하는 중입니다..."):
+                    upload_result = upload_contract_to_backend(lease_contract_file)
+                st.session_state.chat_context_doc = build_contract_doc_context(upload_result)
+                reset_chat_state()
+                st.success("계약서 텍스트 추출이 완료되었습니다. 이제 이 계약서를 기준으로 질문할 수 있어요.")
+                st.rerun()
+            except requests.exceptions.ConnectionError:
+                st.error("백엔드 서버에 연결할 수 없습니다. FastAPI 서버를 먼저 실행해 주세요.")
+                st.code("cd backend\n..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --reload", language="powershell")
+            except requests.exceptions.HTTPError as exc:
+                detail = exc.response.text if exc.response is not None else str(exc)
+                st.error(f"업로드 API 오류: {detail}")
+            except Exception as exc:
+                st.error(f"계약서 처리 중 오류가 발생했습니다: {exc}")
+
+        if st.session_state.get("chat_context_doc"):
+            st.markdown(
+                f"""
+                <div style="background:var(--green-soft);border:1px solid #b8ead9;border-radius:12px;
+                            padding:12px 14px;margin-top:10px;font-size:13px;color:#005a3f">
+                  ✓ 계약서 업로드 완료 · <b>{st.session_state.chat_context_doc['title']}</b> 기준으로 AI 상담을 진행합니다.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         section_divider()
 
@@ -396,13 +590,9 @@ def render():
         unsafe_allow_html=True,
     )
 
-    # 세션 메시지 초기화 (모드 진입 시 이미 셋업됨)
+    # 세션 메시지 초기화. 실제 질문 전에는 입력창만 보이게 비워 둔다.
     if "messages" not in st.session_state:
-        st.session_state.messages = [{
-            "role": "assistant",
-            "content": DEFAULT_REPLY["answer"],
-            "sources": DEFAULT_REPLY["sources"],
-        }]
+        st.session_state.messages = []
 
     # 빠른 질문 (모드별 동적)
     quick = st.columns(4)
@@ -413,25 +603,33 @@ def render():
         with quick[i]:
             if st.button(q, key=f"q_{i}", use_container_width=True):
                 st.session_state.messages.append({"role": "user", "content": q})
-                reply = find_reply(q, ctx_doc=ctx_doc, ctx_prop=ctx_prop)
+                reply = generate_chat_reply(q, mode, ctx_doc, ctx_prop)
                 st.session_state.messages.append(
                     {"role": "assistant", "content": reply["answer"], "sources": reply["sources"]}
                 )
                 st.rerun()
 
     # 메시지 렌더링
-    st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
-    for m in st.session_state.messages:
-        if m["role"] == "user":
-            st.markdown(f'<div class="chat-q">{m["content"]}</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="chat-a">{m["content"]}</div>', unsafe_allow_html=True)
-            if m.get("sources"):
-                refs = "".join(f'<span class="ref">{s}</span>' for s in m["sources"])
-                st.markdown(
-                    f'<div class="rag-src"><b>근거 자료</b>{refs}</div>',
-                    unsafe_allow_html=True,
-                )
+    if st.session_state.messages:
+        st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
+        render_chat_messages(st.session_state.messages)
+
+    if mode == "default":
+        st.markdown(
+            """
+            <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:12px;padding:16px;margin-top:16px;margin-bottom:16px;font-size:14px;color:var(--gray-900)">
+              현재 매물(<b>종로구 명륜2가 35-12</b>)의 자료를 분석해 보면, <b>전세가율 91%</b>, <b>선순위 근저당 ₩2.1억 미말소</b>, <b>신탁등기 의심</b> 등 3가지 치명적인 위험 신호가 있습니다.<br/><br/>
+              구체적으로 어떤 부분을 알려드릴까요? 위의 빠른 질문을 이용하시거나 자유롭게 물어보세요.
+              <div style="margin-top:12px;display:flex;gap:6px;align-items:center;">
+                <b style="font-size:12px;color:var(--gray-600);margin-right:4px;">근거 자료</b>
+                <span class="ref" style="background:#fff;border:1px solid var(--gray-200);padding:4px 8px;border-radius:6px;font-size:12px;">📄 등기부등본</span>
+                <span class="ref" style="background:#fff;border:1px solid var(--gray-200);padding:4px 8px;border-radius:6px;font-size:12px;">📋 계약서 초안</span>
+                <span class="ref" style="background:#fff;border:1px solid var(--gray-200);padding:4px 8px;border-radius:6px;font-size:12px;">🏠 종로구 실거래가</span>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # 입력
     placeholder = {
@@ -441,10 +639,11 @@ def render():
     }[mode]
     if prompt := st.chat_input(placeholder):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        reply = find_reply(
+        reply = generate_chat_reply(
             prompt,
-            ctx_doc=st.session_state.get("chat_context_doc"),
-            ctx_prop=st.session_state.get("chat_context_property"),
+            mode,
+            st.session_state.get("chat_context_doc"),
+            st.session_state.get("chat_context_property"),
         )
         st.session_state.messages.append(
             {"role": "assistant", "content": reply["answer"], "sources": reply["sources"]}

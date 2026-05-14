@@ -259,26 +259,42 @@ GLOBAL_CSS = """
   .stat-row .delta { color: var(--green); font-size: 11px; font-weight: 700; margin-left: 6px; }
 
   /* Chat-like cells */
+  .chat-log-panel {
+    min-height: 48vh;
+    max-height: 52vh;
+    overflow-y: auto;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    border: 1px solid var(--gray-200);
+    border-radius: 18px;
+    padding: 20px;
+    box-shadow: 0 14px 36px rgba(17, 24, 39, .06);
+  }
   .chat-q {
-    background: var(--blue); color: #fff;
-    padding: 12px 16px; border-radius: 16px 16px 4px 16px;
-    margin-left: auto; max-width: 80%;
-    width: fit-content; margin-bottom: 12px;
-    font-size: 14px;
+    background: transparent; color: var(--gray-900);
+    padding: 8px 0 12px 0;
+    margin-left: 0; max-width: 100%;
+    width: 100%; margin-bottom: 8px;
+    font-size: 14px; border-bottom: 1px dashed var(--gray-200);
+  }
+  .chat-q b {
+    display: inline-block; color: var(--blue); font-size: 12px; margin-right: 8px;
+  }
+  .chat-q span {
+    font-weight: 700;
   }
   .chat-a {
     background: #fff; border: 1px solid var(--gray-200);
-    padding: 16px 18px; border-radius: 16px 16px 16px 4px;
-    margin-right: auto; max-width: 92%;
-    width: fit-content; margin-bottom: 12px;
+    padding: 16px 18px; border-radius: 16px;
+    margin-right: auto; max-width: 100%;
+    width: 100%; margin-bottom: 12px;
     font-size: 14px; line-height: 1.65; color: var(--gray-900);
   }
-  .chat-a + .rag-src { margin-top: -4px; margin-bottom: 12px; }
+  .chat-a .rag-src { margin-top: 12px; }
 
   .rag-src {
     background: var(--gray-100); border-radius: 10px;
     padding: 10px 14px; font-size: 12px; color: var(--gray-700);
-    max-width: 92%; display: flex; flex-wrap: wrap; gap: 6px;
+    max-width: 100%; display: flex; flex-wrap: wrap; gap: 6px;
   }
   .rag-src b { color: var(--gray-900); margin-right: 4px; }
   .rag-src .ref {
@@ -856,8 +872,5 @@ GLOBAL_CSS = """
   }
 </style>
 """
-
-
-
 
 
