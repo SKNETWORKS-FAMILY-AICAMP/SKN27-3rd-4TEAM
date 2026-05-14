@@ -43,7 +43,7 @@
 | random_forest | RandomForestRegressor |
 | extra_trees | ExtraTreesRegressor |
 | catboost | CatBoostRegressor, 설치되어 있을 때만 자동 포함 |
-| ensemble_mean | 학습된 단일 모델들의 예측 평균 앙상블 |
+| ensemble_mean | `lightgbm + catboost + xgboost` 세 모델의 예측 평균 앙상블 |
 
 즉 이제는 “대체 모델 하나”만 쓰는 구조가 아니라, `horizon x model_name` 단위로 성능을 비교합니다.
 
@@ -130,3 +130,4 @@ machine_learning/artifacts/can_jeonse/horizon_metrics/1m/all_model_metrics.json
 현재 머신러닝 전처리에서는 `floor < 0`인 거래를 지하/반지하층으로 보고 학습 및 시세 산출 대상에서 제외합니다. 따라서 모델 결과는 지상층 거래를 기준으로 한 동별·주택유형별 평당가 및 예측 위험도입니다.
 
 계약서 또는 사용자 입력에서 반지하/지하층이 확인되는 경우, 모델 에이전트는 해당 계약을 일반 모델 위험도 산출 대상에서 제외하거나 `excluded_case`로 반환하고, 법률/특약 에이전트의 별도 검토를 요청해야 합니다.
+

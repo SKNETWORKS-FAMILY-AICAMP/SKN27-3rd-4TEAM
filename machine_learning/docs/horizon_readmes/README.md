@@ -15,7 +15,7 @@
 
 ## 사용 모델
 
-각 horizon마다 `lightgbm`, `xgboost`, `hist_gradient_boosting`, `random_forest`, `extra_trees`, `ensemble_mean`을 각각 평가했습니다.
+각 horizon마다 `lightgbm`, `xgboost`, `catboost`, `hist_gradient_boosting`, `random_forest`, `extra_trees`, `ensemble_mean`을 각각 평가했습니다. `ensemble_mean`은 `lightgbm + catboost + xgboost` 세 모델의 평균 앙상블입니다.
 
 ## Horizon별 Best Model
 
@@ -42,3 +42,4 @@ cd E:\dev\SKN27-3rd-4TEAM
 .\.venv\Scripts\activate
 python .\machine_learning\can_jeonse_forecast.py
 ```
+

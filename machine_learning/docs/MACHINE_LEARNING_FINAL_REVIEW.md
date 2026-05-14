@@ -229,6 +229,7 @@ actual_risk_label_* 제외
 ```text
 LightGBM
 XGBoost
+CatBoost
 HistGradientBoostingRegressor
 RandomForestRegressor
 ExtraTreesRegressor
@@ -252,7 +253,7 @@ horizon_metrics/24m/lightgbm_metrics.json
 horizon_metrics/24m/all_model_metrics.json
 ```
 
-즉 단순히 앙상블만 돌린 것이 아니라, 각 모델별 단독 성능과 앙상블 성능을 모두 저장하도록 구성되어 있습니다.
+즉 단순히 앙상블만 돌린 것이 아니라, 각 모델별 단독 성능과 앙상블 성능을 모두 저장하도록 구성되어 있습니다. 현재 `ensemble_mean`은 전체 후보 평균이 아니라 `LightGBM + CatBoost + XGBoost` 세 모델의 예측값만 평균내는 방식입니다.
 
 ## 9. 최종 best model 결과
 
@@ -275,6 +276,25 @@ horizon_metrics/24m/all_model_metrics.json
 다만 24개월 모델은 overfit severe=True이므로 단독 판단이 아니라 보조 지표로 설명해야 합니다.
 ```
 
+
+### 9.1 24개월 주요 모델 비교
+
+CatBoost 설치 후 `ensemble_mean`은 아래 세 모델만 평균내도록 수정했습니다.
+
+```text
+LightGBM + CatBoost + XGBoost
+```
+
+24개월 기준 주요 결과는 아래와 같습니다.
+
+| 모델 | Valid MAPE | Baseline MAPE | Baseline보다 개선 | ROC-AUC | F1 | 비고 |
+|---|---:|---:|---|---:|---:|---|
+| LightGBM | 27.03% | 29.63% | 예 | 0.7946 | 0.6218 | 24개월 best model |
+| Ensemble Mean | 28.46% | 29.63% | 예 | 0.7894 | 0.5607 | LightGBM + CatBoost + XGBoost 평균 |
+| CatBoost | 30.00% | 29.63% | 아니오 | 0.7779 | 0.5701 | 단독 기준 baseline보다 낮음 |
+| XGBoost | 30.42% | 29.63% | 아니오 | 0.7763 | 0.5973 | 단독 기준 baseline보다 낮음 |
+
+따라서 앙상블 구조는 요청한 방향대로 수정되었지만, 성능 기준 최종 24개월 best model은 여전히 LightGBM입니다.
 ## 10. 과적합 검토
 
 과적합 검토 결과는 아래와 같습니다.
@@ -479,5 +499,7 @@ Supervisor 전달용 Input/Output 문서 작성 완료
 최종 서비스/발표 기준으로는 아래처럼 설명하면 됩니다.
 
 ```text
-본 모델은 서울 종로구의 연립다세대/오피스텔 매매 및 전세 실거래 데이터를 바탕으로 동·주택유형·월 단위의 매매 평당가 흐름을 학습했다. 1/3/6/12/24개월 horizon별로 LightGBM, XGBoost, HistGradientBoosting, RandomForest, ExtraTrees, Ensemble을 비교했고, 전세계약 기간과 가장 잘 맞는 24개월 LightGBM 모델을 모델 에이전트의 primary forecast로 사용했다. 다만 24개월 모델은 과적합 경고가 있으므로 단독 판단이 아니라 현재 전세가율, 면적구간 최근 12개월 시세, 12개월 보조 모델, 법률/특약 에이전트 결과와 함께 종합 판단하도록 설계했다.
+본 모델은 서울 종로구의 연립다세대/오피스텔 매매 및 전세 실거래 데이터를 바탕으로 동·주택유형·월 단위의 매매 평당가 흐름을 학습했다. 1/3/6/12/24개월 horizon별로 LightGBM, XGBoost, CatBoost, HistGradientBoosting, RandomForest, ExtraTrees, LightGBM+CatBoost+XGBoost 앙상블을 비교했고, 전세계약 기간과 가장 잘 맞는 24개월 LightGBM 모델을 모델 에이전트의 primary forecast로 사용했다. 다만 24개월 모델은 과적합 경고가 있으므로 단독 판단이 아니라 현재 전세가율, 면적구간 최근 12개월 시세, 12개월 보조 모델, 법률/특약 에이전트 결과와 함께 종합 판단하도록 설계했다.
 ```
+
+

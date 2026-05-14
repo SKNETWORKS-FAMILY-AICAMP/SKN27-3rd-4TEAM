@@ -66,6 +66,7 @@ ARTIFACT_DIR = ROOT / "machine_learning" / "artifacts" / "can_jeonse"
 
 M2_PER_PYEONG = 3.3058
 HORIZONS = (1, 3, 6, 12, 24)
+ENSEMBLE_MEMBER_NAMES = ("lightgbm", "catboost", "xgboost")
 RISK_THRESHOLD = 0.80
 GROUP_KEYS = ["dong_name", "property_type"]
 CAT_COLS = ["dong_name", "property_type"]
@@ -665,9 +666,11 @@ def train_single_horizon_model(panel: pd.DataFrame, output_dir: Path, horizon: i
             encoding="utf-8",
         )
 
-    if len(fitted_models) >= 2:
-        ensemble_train_pred = np.mean(list(train_predictions.values()), axis=0)
-        ensemble_valid_pred = np.mean(list(valid_predictions.values()), axis=0)
+    ensemble_members = [name for name in ENSEMBLE_MEMBER_NAMES if name in fitted_models]
+    missing_ensemble_members = [name for name in ENSEMBLE_MEMBER_NAMES if name not in fitted_models]
+    if len(ensemble_members) == len(ENSEMBLE_MEMBER_NAMES):
+        ensemble_train_pred = np.mean([train_predictions[name] for name in ensemble_members], axis=0)
+        ensemble_valid_pred = np.mean([valid_predictions[name] for name in ensemble_members], axis=0)
         ensemble_row = build_metric_row(
             horizon,
             "ensemble_mean",
@@ -679,17 +682,27 @@ def train_single_horizon_model(panel: pd.DataFrame, output_dir: Path, horizon: i
             baseline_valid_metrics,
             leakage_audit,
         )
-        ensemble_row["ensemble_members"] = list(fitted_models.keys())
+        ensemble_row["ensemble_members"] = ensemble_members
         metrics.append(ensemble_row)
-        joblib.dump(ModelBundle(horizon=horizon, model_name="ensemble_mean", models=fitted_models), model_dir / "ensemble_mean.joblib")
+        ensemble_models = {name: fitted_models[name] for name in ensemble_members}
+        joblib.dump(ModelBundle(horizon=horizon, model_name="ensemble_mean", models=ensemble_models), model_dir / "ensemble_mean.joblib")
         (horizon_dir / "ensemble_mean_metrics.json").write_text(
             json.dumps(ensemble_row, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+    else:
+        print(
+            f"    - Skipping ensemble_mean for {horizon}m: "
+            f"missing required members={missing_ensemble_members}"
+        )
 
     best_row = select_best_metric(metrics)
     best_model_name = str(best_row["model_name"])
-    best_models = fitted_models if best_model_name == "ensemble_mean" else {best_model_name: fitted_models[best_model_name]}
+    best_models = (
+        {name: fitted_models[name] for name in ENSEMBLE_MEMBER_NAMES}
+        if best_model_name == "ensemble_mean"
+        else {best_model_name: fitted_models[best_model_name]}
+    )
     best_bundle = ModelBundle(horizon=horizon, model_name=best_model_name, models=best_models)
     joblib.dump(best_bundle, output_dir / f"growth_{horizon}m_best_model.joblib")
     (horizon_dir / "all_model_metrics.json").write_text(
@@ -862,5 +875,7 @@ def main(argv: Iterable[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
