@@ -2,6 +2,12 @@
 -- 전세계약 위험 진단 에이전트 - PostgreSQL 스키마
 -- =============================================
 
+-- pgvector 확장
+-- 실제 벡터 저장/검색은 backend/rag_server/core/vector_store.py의
+-- langchain_postgres.PGVector(collection_name='jeonse_docs')가 관리한다.
+-- PGVector는 langchain_pg_collection, langchain_pg_embedding 테이블을 사용한다.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- 1. 전세 실거래가 (RAG 검색 + 전세가율 계산용)
 CREATE TABLE jeonse_transactions (
     id                  SERIAL PRIMARY KEY,
@@ -56,15 +62,27 @@ CREATE TABLE price_ratio (
 );
 
 -- 4. RAG용 문서 메타데이터
+-- 주의:
+-- - 실제 embedding vector는 langchain-postgres PGVector 테이블에 저장된다.
+-- - 이 테이블은 원문 문서/청크의 출처와 관리 정보를 보관하는 보조 메타데이터 테이블이다.
+-- - pgvector collection 이름은 backend/rag_server/config.py의 PG_VECTOR_COLLECTION='jeonse_docs' 기준이다.
 CREATE TABLE rag_documents (
     id                  SERIAL PRIMARY KEY,
-    doc_type            VARCHAR(30),            -- 법령/판례/사례집/서식
+    doc_type            VARCHAR(30),            -- law/case/guide/checklist/casebook/form 등
     title               VARCHAR(200),
     file_name           VARCHAR(200),
     chunk_index         INTEGER,                -- 청크 번호
     chunk_text          TEXT,                   -- 청크 텍스트 (검색용)
-    vector_id           VARCHAR(100),           -- ChromaDB vector ID
+    vector_id           VARCHAR(100),           -- langchain_pg_embedding id 또는 외부 vector reference id
+    collection_name     VARCHAR(100) DEFAULT 'jeonse_docs',
+    chunk_id            VARCHAR(150),           -- UI/RAG citation용 chunk 식별자
+    source_id           VARCHAR(150),           -- 원문/판례/법령 source 식별자
+    page                INTEGER,                -- PDF/문서 page
+    court               VARCHAR(100),           -- 판례 법원명
+    case_number         VARCHAR(100),           -- 판례 사건번호
     source_law          VARCHAR(100),           -- 관련 법령명
+    article             VARCHAR(100),           -- 관련 조문
+    metadata            JSONB DEFAULT '{}'::jsonb,
     created_at          TIMESTAMP DEFAULT NOW(),
     UNIQUE (file_name, chunk_index)
 );
@@ -92,5 +110,9 @@ CREATE INDEX idx_sale_sigungu ON sale_transactions(sigungu);
 CREATE INDEX idx_price_ratio_dong ON price_ratio(dong_name);
 CREATE INDEX idx_rag_doc_type ON rag_documents(doc_type);
 CREATE INDEX idx_rag_vector_id ON rag_documents(vector_id);
+CREATE INDEX idx_rag_collection ON rag_documents(collection_name);
+CREATE INDEX idx_rag_source_id ON rag_documents(source_id);
+CREATE INDEX idx_rag_case_number ON rag_documents(case_number);
+CREATE INDEX idx_rag_metadata ON rag_documents USING GIN(metadata);
 CREATE INDEX idx_diagnosis_session ON diagnosis_logs(session_id);
 CREATE INDEX idx_diagnosis_risk ON diagnosis_logs(risk_level);

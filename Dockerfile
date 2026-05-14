@@ -17,7 +17,7 @@ WORKDIR /app
 
 # 의존성 먼저 설치 (캐시 활용)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 
 # 소스 코드 복사
 COPY . .

@@ -1,12 +1,88 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+# Python 3.11
+# Updated to LangChain 1.x / LangGraph 1.1.x compatible pins.
+
 # =====================
-# Data
+# App / API
+# =====================
+fastapi==0.124.4
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.12.5
+pydantic-settings==2.12.0
+python-dotenv==1.1.0
+requests==2.32.5
+tqdm==4.67.3
+streamlit==1.57.0
+plotly>=5.18.0
+
+# =====================
+# LangGraph / LangChain / LLM
+# =====================
+langgraph>=1.1.10,<1.2.0
+langchain==1.2.17
+langchain-core>=1.2.0,<2.0.0
+langchain-community==0.4.1
+langchain-openai==1.2.1
+langchain-pymupdf4llm==0.5.0
+langchain-ollama>=1.0.0,<2.0.0
+langchain-postgres>=0.0.15,<0.1.0
+langsmith>=0.1.17,<0.4.0
+openai==2.36.0
+tiktoken==0.9.0
+groq>=0.9.0,<1.0.0
+langchain-huggingface==1.0.1
+
+# =====================
+# RAG / PDF
+# =====================
+pypdf==5.4.0
+pdfplumber==0.11.4
+pymupdf4llm==0.1.9
+beautifulsoup4==4.13.4
+
+# =====================
+# DB / Vector / Graph
+# =====================
+sqlalchemy==2.0.40
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+neo4j==5.28.1
+alembic==1.15.2
+chromadb==0.6.3
+
+# =====================
+# Data / ML / Deep Learning
 # =====================
 pandas==2.2.3
 numpy==2.2.5
-requests==2.32.5
-beautifulsoup4==4.13.4
 python-dateutil==2.9.0
 PublicDataReader==1.0.3
+pytorch-tabnet==4.1.0
+scikit-learn==1.6.1
+xgboost==3.2.0
+lightgbm==4.6.0
+matplotlib==3.10.1
+seaborn==0.13.2
+plotly>=5.24.1,<7.0.0
+joblib==1.4.2
+# =====================
+# Evaluation / Data
+# =====================
+ragas==0.4.3
+datasets>=4.0.0,<5.0.0
+
+# =====================
+# Notebook / Tools
+# =====================
+nbformat>=4.2.0
+jupyter
+
+# =====================
+# Embedding / Deep Learning (CPU)
+# =====================
+torch>=2.2.0,<3.0.0
+sentence-transformers==5.1.2
 
 # =====================
 # ML
@@ -14,34 +90,15 @@ PublicDataReader==1.0.3
 scikit-learn==1.6.1
 xgboost==3.2.0
 lightgbm==4.6.0
+catboost==1.2.8
 matplotlib==3.10.1
 seaborn==0.13.2
 joblib==1.4.2
+nbformat>=4.2.0
 
 # =====================
-# RAG / PDF
+# Embedding (CPU 전용)
 # =====================
-langchain==1.2.17
-langchain-community==0.4.1
-langchain-openai==1.2.1
-langchain-pymupdf4llm==0.5.0
-openai==2.36.0
-chromadb==0.6.3
-tiktoken==0.9.0
-pypdf==5.4.0
-pdfplumber==0.11.4
-pymupdf4llm==0.1.9
-
-# =====================
-# DB
-# =====================
-sqlalchemy==2.0.40
-psycopg2-binary==2.9.10
-alembic==1.15.2
-
-# =====================
-# App
-# =====================
-streamlit==1.57.0
-python-dotenv==1.1.0
-tqdm==4.67.3
+# torch==2.2.0+cpu
+sentence-transformers==5.1.2
+langchain-huggingface==1.0.1

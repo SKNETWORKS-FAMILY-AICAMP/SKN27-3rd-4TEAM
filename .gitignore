@@ -11,13 +11,16 @@ __pycache__/
 venv/
 
 # data
-data/
+data/*
 *.csv
 *.json
 *.parquet
 *.pkl
 *.pdf
 *.hwp
+!data/
+!data/safety_checklist.json
+!data/playbook_cards.json
 
 # IDE
 .vscode/

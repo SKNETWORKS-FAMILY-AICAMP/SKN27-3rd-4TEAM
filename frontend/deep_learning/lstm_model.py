@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+
+
+ARTIFACT_ROOT = Path(__file__).resolve().parent / "artifacts"
+PROCESSED_DIR = ARTIFACT_ROOT / "processed"
+MODEL_DIR = ARTIFACT_ROOT / "models"
+LOOKBACK = 12
+FORECAST_MONTHS = 24
+MIN_MONTHS = LOOKBACK + 6
+
+
+def _model_key(row: pd.Series | dict) -> str:
+    # 모델 파일명 생성 시 누락된 지역/유형 값은 안전한 기본값으로 대체합니다.
+    parts = [row.get("sido", "미상"), row.get("sigungu", "미상"), row.get("dong_name", "미상"), row.get("housing_type", "미상"), row.get("area_bucket", "미상")]
+    return "_".join(str(p).replace(" ", "") for p in parts)
+
+
+def make_sequences(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    x, y = [], []
+    for idx in range(LOOKBACK, len(values)):
+        x.append(values[idx - LOOKBACK : idx])
+        y.append(values[idx])
+    return np.asarray(x), np.asarray(y)
+
+
+def build_model(hidden: int = 64):
+    import torch.nn as nn
+
+    class LSTMRegressor(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lstm = nn.LSTM(input_size=1, hidden_size=hidden, num_layers=2, dropout=0.2, batch_first=True)
+            self.head = nn.Sequential(nn.Linear(hidden, 32), nn.ReLU(), nn.Linear(32, 1))
+
+        def forward(self, x):
+            out, _ = self.lstm(x)
+            return self.head(out[:, -1, :])
+
+    return LSTMRegressor()
+
+
+def train(input_path: Path = PROCESSED_DIR / "jeonse_monthly.csv", output_dir: Path = MODEL_DIR, save_artifacts: bool = True) -> dict:
+    try:
+        import torch
+        import torch.nn as nn
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        from sklearn.preprocessing import MinMaxScaler
+        from torch.utils.data import DataLoader, TensorDataset
+    except ImportError as exc:
+        raise ImportError("LSTM 학습에는 torch와 scikit-learn이 필요합니다.") from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(input_path, encoding="utf-8-sig")
+    group_cols = ["sido", "sigungu", "dong_name", "housing_type", "area_bucket"]
+    results, skipped = {}, {}
+
+    for keys, group in df.groupby(group_cols, dropna=False):
+        group = group.sort_values("contract_month")
+        key_data = dict(zip(group_cols, keys, strict=False))
+        key = _model_key(key_data)
+        values = group["median_deposit_per_pyeong"].astype(float).interpolate().ffill().bfill().to_numpy().reshape(-1, 1)
+        if len(values) < MIN_MONTHS:
+            skipped[key] = f"{len(values)} months: at least {MIN_MONTHS} months required"
+            continue
+
+        x_raw, y_raw = make_sequences(values.flatten())
+        split = max(1, int(len(x_raw) * 0.8))
+        scaler = MinMaxScaler()
+        scaler.fit(values[: LOOKBACK + split])
+
+        x_scaled = scaler.transform(x_raw.reshape(-1, 1)).reshape(x_raw.shape)
+        y_scaled = scaler.transform(y_raw.reshape(-1, 1)).flatten()
+        x_train = torch.FloatTensor(x_scaled[:split]).unsqueeze(-1)
+        y_train = torch.FloatTensor(y_scaled[:split]).unsqueeze(-1)
+        x_test = torch.FloatTensor(x_scaled[split:]).unsqueeze(-1)
+        y_test = torch.FloatTensor(y_scaled[split:]).unsqueeze(-1)
+        loader = DataLoader(TensorDataset(x_train, y_train), batch_size=16, shuffle=True)
+        torch.manual_seed(42)
+        model = build_model()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        criterion = nn.MSELoss()
+        best_state, best_valid_loss, patience = model.state_dict(), float("inf"), 0
+        last_train_loss = 0.0
+
+        for _ in range(120):
+            model.train()
+            epoch_loss = 0.0
+            for xb, yb in loader:
+                optimizer.zero_grad()
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                epoch_loss += float(loss.item())
+            last_train_loss = epoch_loss / max(len(loader), 1)
+            model.eval()
+            with torch.no_grad():
+                valid_loss = float(criterion(model(x_test), y_test).item()) if len(x_test) else last_train_loss
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_state = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+                patience = 0
+            else:
+                patience += 1
+                if patience >= 15:
+                    break
+
+        model.load_state_dict(best_state)
+        model.eval()
+        with torch.no_grad():
+            if len(x_test):
+                pred = scaler.inverse_transform(model(x_test).numpy()).flatten()
+                actual = y_raw[split:]
+                naive = x_raw[split:, -1]
+                mae = float(mean_absolute_error(actual, pred))
+                rmse = float(np.sqrt(mean_squared_error(actual, pred)))
+                naive_mae = float(mean_absolute_error(actual, naive))
+                naive_rmse = float(np.sqrt(mean_squared_error(actual, naive)))
+            else:
+                mae = rmse = naive_mae = naive_rmse = 0.0
+        if save_artifacts:
+            # 테스트 실행에서는 모델 파일 저장을 끄고, 실제 배포용 학습에서만 저장합니다.
+            torch.save(best_state, output_dir / f"lstm_{key}.pt")
+            joblib.dump(scaler, output_dir / f"lstm_scaler_{key}.pkl")
+        results[key] = {
+            "mae": round(mae, 2),
+            "rmse": round(rmse, 2),
+            "naive_mae": round(naive_mae, 2),
+            "naive_rmse": round(naive_rmse, 2),
+            "beats_naive": bool(rmse < naive_rmse) if naive_rmse else None,
+            "best_valid_loss": round(float(best_valid_loss), 6),
+            "last_train_loss": round(float(last_train_loss), 6),
+            "months": int(len(values)),
+            **key_data,
+        }
+
+
+    summary = {"trained_models": results, "skipped": skipped}
+    if save_artifacts:
+        # 저장 모드에서만 추론 재사용을 위한 학습 메타데이터를 남깁니다.
+        (output_dir / "lstm_metadata.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def forecast(key_data: dict, recent_values: list[float], months: int = FORECAST_MONTHS) -> dict:
+    import torch
+
+    key = _model_key(key_data)
+    scaler = joblib.load(MODEL_DIR / f"lstm_scaler_{key}.pkl")
+    model = build_model()
+    model.load_state_dict(torch.load(MODEL_DIR / f"lstm_{key}.pt", map_location="cpu"))
+    model.eval()
+    scaled = list(scaler.transform(np.asarray(recent_values[-LOOKBACK:], dtype=float).reshape(-1, 1)).flatten())
+    predictions = []
+    with torch.no_grad():
+        for _ in range(months):
+            x = torch.FloatTensor(scaled[-LOOKBACK:]).reshape(1, LOOKBACK, 1)
+            pred_scaled = float(model(x).numpy()[0][0])
+            scaled.append(pred_scaled)
+            predictions.append(float(scaler.inverse_transform([[pred_scaled]])[0][0]))
+    current, final = float(recent_values[-1]), float(predictions[-1])
+    change_rate = (final - current) / current * 100 if current else 0
+    return {
+        "current_per_pyeong": round(current, 2),
+        "predicted_24m_per_pyeong": round(final, 2),
+        "change_rate": round(change_rate, 2),
+        "trend": "상승" if change_rate > 5 else "하락" if change_rate < -5 else "보합",
+        "risk_signal": "주의" if change_rate < -10 else "보통",
+        "monthly_forecast": [round(v, 2) for v in predictions],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", type=Path, default=PROCESSED_DIR / "jeonse_monthly.csv")
+    args = parser.parse_args()
+    print(json.dumps(train(args.input), ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

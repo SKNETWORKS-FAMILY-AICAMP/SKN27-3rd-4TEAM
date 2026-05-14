@@ -1,0 +1,215 @@
+{
+  "version": "2026-05-11-mvp",
+  "title": "전세계약 안전 체크리스트",
+  "safe_threshold_percent": 80,
+  "stages": [
+    {
+      "stage_id": "BEFORE_CONTRACT",
+      "title": "계약 전",
+      "order": 1,
+      "items": [
+        {
+          "id": "CHECK_REGISTRY_OWNER",
+          "label": "등기부등본 최신본을 직접 발급하고 소유자를 확인했다.",
+          "description": "계약서 임대인과 등기부상 소유자가 일치하는지 확인한다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["REGISTRY"],
+          "auto_keywords": ["REQUIRED_REGISTRY", "REQUIRED_OWNER_MATCH"],
+          "related_risk_types": ["OWNER_MISMATCH", "REGISTRY_RISK"]
+        },
+        {
+          "id": "CHECK_LIEN_SEIZURE_TRUST",
+          "label": "근저당권, 압류, 가압류, 신탁등기 여부를 확인했다.",
+          "description": "갑구/을구의 권리관계가 보증금 회수에 영향을 줄 수 있다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["REGISTRY"],
+          "auto_keywords": ["REQUIRED_REGISTRY"],
+          "related_risk_types": ["LIEN", "SEIZURE", "TRUST_REGISTRATION"]
+        },
+        {
+          "id": "CHECK_MARKET_RATIO",
+          "label": "주변 전세/매매 실거래가와 전세가율을 확인했다.",
+          "description": "보증금이 매매가 대비 과도하면 깡통전세 위험이 커진다.",
+          "priority": "HIGH",
+          "evidence_types": ["MARKET"],
+          "auto_keywords": ["MARKET_RATIO_HIGH", "MARKET_RATIO_CAUTION", "MARKET_RATIO_UNKNOWN"],
+          "related_risk_types": ["DEPOSIT_RECOVERY"]
+        },
+        {
+          "id": "CHECK_LANDLORD_ID",
+          "label": "임대인 신분증과 등기부 소유자 정보를 대조했다.",
+          "description": "동명이인, 명의 도용, 대리권 없는 계약을 방지한다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["CONTRACT", "REGISTRY"],
+          "auto_keywords": ["REQUIRED_OWNER_MATCH"],
+          "related_risk_types": ["IDENTITY_AUTHORITY"]
+        },
+        {
+          "id": "CHECK_TAX_ARREARS",
+          "label": "국세/지방세 체납 가능성을 확인했다.",
+          "description": "체납 세금은 보증금 회수 우선순위에 영향을 줄 수 있다.",
+          "priority": "HIGH",
+          "evidence_types": ["LAW", "CHECKLIST"],
+          "auto_keywords": ["REQUIRED_TAX"],
+          "related_risk_types": ["TAX_ARREARS"]
+        },
+        {
+          "id": "CHECK_AGENT_LICENSE",
+          "label": "공인중개사와 중개사무소 정보를 확인했다.",
+          "description": "중개사 명의와 실제 중개 행위자가 일치하는지 확인한다.",
+          "priority": "MEDIUM",
+          "evidence_types": ["CHECKLIST"],
+          "auto_keywords": [],
+          "related_risk_types": ["BROKER_RISK"]
+        }
+      ]
+    },
+    {
+      "stage_id": "CONTRACT_DAY",
+      "title": "계약 당일",
+      "order": 2,
+      "items": [
+        {
+          "id": "CHECK_CONTRACT_PARTIES",
+          "label": "계약 당사자, 주소, 보증금, 기간이 정확히 기재되었는지 확인했다.",
+          "description": "계약서 핵심 필드가 누락되거나 다르면 분쟁 위험이 커진다.",
+          "priority": "HIGH",
+          "evidence_types": ["CONTRACT"],
+          "auto_keywords": [],
+          "related_risk_types": ["CONTRACT_FIELD"]
+        },
+        {
+          "id": "CHECK_SPECIAL_CLAUSES",
+          "label": "보증금 반환 지연, 수리비 전가 등 불리한 특약을 수정했다.",
+          "description": "임차인에게 과도하게 불리한 특약은 삭제하거나 범위를 제한한다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["CONTRACT", "CHECKLIST"],
+          "auto_keywords": ["CLAUSE_REPAIR_ALL", "CLAUSE_LATE_RETURN", "CLAUSE_NO_OWNER_RESP"],
+          "related_risk_types": ["BAD_CLAUSE"]
+        },
+        {
+          "id": "ADD_NO_NEW_LIEN_CLAUSE",
+          "label": "잔금 전후 새 근저당권 등 권리변동 금지 특약을 넣었다.",
+          "description": "대항력 발생 전 권리변동으로 순위가 밀리는 위험을 줄인다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["CONTRACT", "CHECKLIST"],
+          "auto_keywords": ["MISSING_NO_NEW_LIEN"],
+          "related_risk_types": ["OPPOSING_POWER"]
+        },
+        {
+          "id": "CHECK_PROXY_DOCUMENTS",
+          "label": "대리계약이면 위임장, 인감증명, 소유자 의사를 확인했다.",
+          "description": "무권대리 계약을 피하기 위한 필수 절차다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["CONTRACT"],
+          "auto_keywords": [],
+          "related_risk_types": ["IDENTITY_AUTHORITY"]
+        },
+        {
+          "id": "PAY_TO_OWNER_ACCOUNT",
+          "label": "계약금은 소유자 명의 계좌로 지급했다.",
+          "description": "대리인 또는 제3자 계좌 입금은 분쟁 위험이 있다.",
+          "priority": "HIGH",
+          "evidence_types": ["CONTRACT"],
+          "auto_keywords": [],
+          "related_risk_types": ["IDENTITY_AUTHORITY"]
+        }
+      ]
+    },
+    {
+      "stage_id": "BALANCE_DAY",
+      "title": "잔금일",
+      "order": 3,
+      "items": [
+        {
+          "id": "RECHECK_REGISTRY_BEFORE_BALANCE",
+          "label": "잔금 지급 직전 등기부등본을 다시 확인했다.",
+          "description": "계약 이후 새 근저당권, 압류, 신탁 등 변동이 있는지 확인한다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["REGISTRY"],
+          "auto_keywords": ["REQUIRED_REGISTRY"],
+          "related_risk_types": ["REGISTRY_RISK"]
+        },
+        {
+          "id": "MOVE_IN_REPORT",
+          "label": "전입신고를 지체 없이 진행했다.",
+          "description": "대항력 확보의 핵심 요건이다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["LAW", "CHECKLIST"],
+          "auto_keywords": [],
+          "related_risk_types": ["OPPOSING_POWER"]
+        },
+        {
+          "id": "GET_FIXED_DATE",
+          "label": "확정일자를 받았다.",
+          "description": "우선변제권 확보를 위해 중요하다.",
+          "priority": "CRITICAL",
+          "evidence_types": ["LAW", "CHECKLIST"],
+          "auto_keywords": [],
+          "related_risk_types": ["PREFERRED_PAYMENT"]
+        },
+        {
+          "id": "CHECK_HUG_INSURANCE",
+          "label": "보증보험 가입 가능 여부를 확인했다.",
+          "description": "보증보험이 불가능한 매물은 보증금 회수 위험을 더 보수적으로 봐야 한다.",
+          "priority": "HIGH",
+          "evidence_types": ["GUIDE", "CHECKLIST"],
+          "auto_keywords": ["MARKET_RATIO_HIGH"],
+          "related_risk_types": ["DEPOSIT_RECOVERY"]
+        },
+        {
+          "id": "KEEP_PAYMENT_EVIDENCE",
+          "label": "잔금 지급, 열쇠 인도, 입주 증거를 보관했다.",
+          "description": "분쟁 발생 시 계약 이행과 점유 사실을 입증하는 자료가 된다.",
+          "priority": "MEDIUM",
+          "evidence_types": ["CONTRACT"],
+          "auto_keywords": [],
+          "related_risk_types": ["EVIDENCE"]
+        }
+      ]
+    },
+    {
+      "stage_id": "DURING_LEASE",
+      "title": "기간 중",
+      "order": 4,
+      "items": [
+        {
+          "id": "MONITOR_REGISTRY_CHANGE",
+          "label": "계약 기간 중 등기부 권리변동을 주기적으로 확인한다.",
+          "description": "임대인 변경, 압류, 경매개시 등 위험 신호를 조기에 파악한다.",
+          "priority": "HIGH",
+          "evidence_types": ["REGISTRY"],
+          "auto_keywords": [],
+          "related_risk_types": ["REGISTRY_RISK"]
+        },
+        {
+          "id": "KEEP_LEASE_EVIDENCE",
+          "label": "월세/관리비 납부, 수리 요청, 임대인 연락 기록을 보관한다.",
+          "description": "분쟁 발생 시 사실관계를 입증하는 데 필요하다.",
+          "priority": "MEDIUM",
+          "evidence_types": ["CONTRACT"],
+          "auto_keywords": [],
+          "related_risk_types": ["EVIDENCE"]
+        },
+        {
+          "id": "NOTICE_RENEWAL_OR_TERMINATION",
+          "label": "계약 갱신 또는 종료 의사를 기한 내 명확히 통지한다.",
+          "description": "묵시적 갱신과 보증금 반환 일정을 관리한다.",
+          "priority": "MEDIUM",
+          "evidence_types": ["LAW", "GUIDE"],
+          "auto_keywords": [],
+          "related_risk_types": ["DEPOSIT_RETURN"]
+        },
+        {
+          "id": "PREPARE_DEPOSIT_RETURN",
+          "label": "만료 전 보증금 반환 일정과 필요 조치를 준비한다.",
+          "description": "반환 지연이 예상되면 내용증명, 임차권등기명령 등 후속 조치를 준비한다.",
+          "priority": "HIGH",
+          "evidence_types": ["LAW", "CASEBOOK"],
+          "auto_keywords": ["CLAUSE_LATE_RETURN"],
+          "related_risk_types": ["DEPOSIT_RETURN"]
+        }
+      ]
+    }
+  ]
+}
