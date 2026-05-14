@@ -75,7 +75,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["python", "rag/scripts/preprocess_load.py"]
+    command: ["python", "-c", "print('pipeline disabled: rag/scripts/preprocess_load.py is deprecated and unused')"]
 
   # =============================================
   # 배치 컨테이너 (정기 실행)

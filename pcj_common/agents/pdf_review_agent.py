@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage
 from pcj_common.tools.contract_tools import check_required_fields, parse_contract_document
 
 try:
-    from common.tools.llm import build_chat_llm
+    from pcj_common.tools.llm import build_chat_llm
 except ImportError:
     build_chat_llm = None  # type: ignore[assignment]
 
@@ -80,7 +80,7 @@ def create_pdf_review_agent():
         supervisor 에서 invoke() 로 호출합니다.
     """
     if build_chat_llm is None:
-        raise RuntimeError("LLM 을 사용할 수 없습니다. common.tools.llm 을 확인하세요.")
+        raise RuntimeError("LLM 을 사용할 수 없습니다. pcj_common.tools.llm 을 확인하세요.")
 
     llm = build_chat_llm(temperature=0.0)
     tools = [parse_contract_document, check_required_fields]

@@ -272,15 +272,8 @@ def evaluate_single_qa(
 
 def evaluate_dl_bridge() -> tuple[bool, float, int]:
     """DL 브리지 동작 확인 — (성공여부, pack_score, findings_count)"""
-    try:
-        from common.tools.dl_market_bridge import run_dl_analysis
-        pack, findings = run_dl_analysis(SAMPLE_CONTRACT_FIELDS)
-        score = pack.quality.score
-        print(f"[DL Bridge] ✓ ContextPack score={score:.2f}, findings={len(findings)}")
-        return True, score, len(findings)
-    except Exception as e:
-        print(f"[DL Bridge] ✗ 오류: {e}")
-        return False, 0.0, 0
+    print("[DL Bridge] skipped: legacy shared package was removed")
+    return False, 0.0, 0
 
 
 async def evaluate_diagnose_pipeline(pipeline: Any) -> dict[str, Any]:
