@@ -28,7 +28,7 @@ DISCLAIMER = "본 답변은 법률 자문이 아니라 판례와 공공자료 �
 
 
 def legal_intake_node(state: LegalConsultationState) -> LegalConsultationState:
-    question = (state.get("question") or "").strip()
+    question = (state.get("question") or state.get("user_question") or "").strip()
     errors = list(state.get("errors", []))
     if not question:
         errors.append("question is required")
@@ -394,4 +394,267 @@ def _merge(state: LegalConsultationState, *, trace: AgentTrace | None = None, **
 
 def _trace(agent: str, action: str, inputs: dict[str, Any], outputs: dict[str, Any]) -> AgentTrace:
     return AgentTrace(agent=agent, action=action, inputs=inputs, outputs=outputs)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v7 추가 노드: legal_consultation_graph.py import 호환용
+# ──────────────────────────────────────────────────────────────────────────────
+
+def legal_supervisor_node(state: LegalConsultationState) -> LegalConsultationState:
+    """LLM supervisor: question type 판단 후 legal_rag / counselor 라우팅 결정."""
+    try:
+        from common.agents.legal_supervisor_agent import run_legal_supervisor_agent
+        question = state.get("user_question") or state.get("question", "")
+        history = state.get("conversation_history", [])
+        decision = run_legal_supervisor_agent(question, history)
+        route = decision.route.value if hasattr(decision.route, "value") else str(decision.route)
+        intent = decision.intent.value if hasattr(decision.intent, "value") else str(decision.intent)
+        needs_rag = route in {"LEGAL_RAG", "BOTH"}
+        return _merge(
+            state,
+            route=route,
+            intent=intent,
+            needs_rag=needs_rag,
+            reason=getattr(decision, "reason", ""),
+            supervisor_status="classified",
+            current_agent="legal_supervisor",
+            trace=_trace("Legal Supervisor", "classify_and_route", {"question": question[:100]}, {"route": route, "intent": intent}),
+        )
+    except Exception as exc:
+        # Deterministic fallback
+        question = state.get("user_question") or state.get("question", "")
+        needs_rag = any(kw in question for kw in ["법", "판례", "법령", "조항", "특약", "등기", "보증", "전입", "대항력"])
+        route = "BOTH" if needs_rag else "COUNSELOR"
+        return _merge(
+            state,
+            route=route,
+            intent="LEGAL_RAG_REQUIRED" if needs_rag else "GENERAL_CHAT",
+            needs_rag=needs_rag,
+            supervisor_status="fallback",
+            reason=f"LLM unavailable: {exc}",
+            current_agent="legal_supervisor",
+            trace=_trace("Legal Supervisor", "deterministic_fallback", {"question": question[:100]}, {"route": route}),
+        )
+
+
+def route_after_legal_supervisor(state: LegalConsultationState) -> str:
+    """라우팅: LEGAL_RAG/BOTH → legal_rag_agent, 나머지 → friendly_counselor_agent."""
+    route = state.get("route", "COUNSELOR")
+    if route in {"LEGAL_RAG", "BOTH"}:
+        return "legal_rag_agent"
+    return "friendly_counselor_agent"
+
+
+def legal_rag_agent_node(state: LegalConsultationState) -> LegalConsultationState:
+    """RAG 검색 + ReAct: 법령·판례 근거로 답변 초안 생성."""
+    question = state.get("user_question") or state.get("question", "")
+    qtype = state.get("question_type") or _classify_question(question)
+
+    # RAG 검색
+    pack = adaptive_rag(
+        "legal_rag_search",
+        question,
+        filters={"doc_type": ["법령", "판례", "사례집"]},
+        top_k=6,
+    )
+
+    # 초안 답변
+    cases = _extract_cases(pack)
+    laws = _extract_laws(pack)
+    draft = _generate_answer_from_rag(question, cases, laws, pack)
+
+    refs = list(state.get("evidence_refs", []))
+    for ctx in pack.contexts:
+        refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+
+    return _merge(
+        state,
+        question_type=qtype,
+        internal_case_context=pack,
+        cited_cases=cases,
+        cited_laws=laws,
+        answer_draft=draft,
+        draft_answer=draft,
+        evidence_refs=refs,
+        current_agent="legal_rag_agent",
+        legal_rag_result={"draft": draft, "case_count": len(cases), "law_count": len(laws)},
+        trace=_trace("Legal RAG Agent", "search_and_draft", {"question": question[:100]}, {"case_count": len(cases), "law_count": len(laws)}),
+    )
+
+
+def route_after_legal_rag(state: LegalConsultationState) -> str:
+    """RAG 결과가 충분하면 review로, 아니면 counselor 보완."""
+    refs = state.get("evidence_refs", [])
+    route = state.get("route", "BOTH")
+    if route == "BOTH" or not refs:
+        return "friendly_counselor_agent"
+    return "legal_review_node"
+
+
+def counselor_agent_node(state: LegalConsultationState) -> LegalConsultationState:
+    """친절한 상담사 톤으로 답변 재작성 / 보완."""
+    draft = state.get("answer_draft") or state.get("draft_answer", "")
+    question = state.get("user_question") or state.get("question", "")
+
+    try:
+        from common.agents.counselor_agent import run_counselor_agent
+        result = run_counselor_agent(question=question, draft_answer=draft, state=state)
+        counselor_answer = result.get("answer", draft)
+    except Exception:
+        counselor_answer = draft or f"'{question}' 에 대한 답변을 준비 중입니다. 전문가 상담을 권장합니다."
+
+    return _merge(
+        state,
+        answer_draft=counselor_answer,
+        draft_answer=counselor_answer,
+        current_agent="friendly_counselor_agent",
+        counselor_result={"answer": counselor_answer},
+        trace=_trace("Friendly Counselor Agent", "rewrite_for_user", {"question": question[:80]}, {"answer_length": len(counselor_answer)}),
+    )
+
+
+def legal_review_node(state: LegalConsultationState) -> LegalConsultationState:
+    """답변 품질 검토: RAG 근거 충분성 / 법률 과신 문구 점검."""
+    try:
+        from common.agents.review_supervisor_agent import review_agent_output
+        result = review_agent_output(
+            current_task=state.get("question_type"),
+            current_agent=state.get("current_agent"),
+            claims=state.get("claims", []),
+            evidence_refs=state.get("evidence_refs", []),
+            graph_context=state.get("graph_context", []),
+            draft_answer=state.get("draft_answer", ""),
+            mode="legal",
+        )
+        status = result.status.value if hasattr(result.status, "value") else str(result.status)
+    except Exception:
+        status = "PASS"
+
+    review_count = state.get("review_count", 0) + 1
+    return _merge(
+        state,
+        review_count=review_count,
+        review_result={"status": status},
+        last_review_status=status,
+        current_agent="legal_review_node",
+        trace=_trace("Legal Review Supervisor", "review_legal_output", {}, {"status": status, "review_count": review_count}),
+    )
+
+
+def route_after_legal_review(state: LegalConsultationState) -> str:
+    """리뷰 결과에 따라 다음 노드 결정."""
+    status = (state.get("review_result") or {}).get("status", "PASS")
+    review_count = state.get("review_count", 0)
+    max_reviews = state.get("max_review_count", 2)
+
+    if status == "PASS" or review_count >= max_reviews:
+        return "legal_guardrail"
+    if status == "NEED_MORE_EVIDENCE":
+        return "extra_rag_search"
+    if status == "NEED_GRAPH_CONTEXT":
+        return "graph_context_node"
+    if status == "NEED_COUNSELOR_REWRITE":
+        return "friendly_counselor_agent"
+    if status in ("REVISION_REQUIRED",):
+        return "legal_rag_agent"
+    if status == "FAIL":
+        return "safe_fallback"
+    return "legal_guardrail"
+
+
+def extra_legal_rag_search_node(state: LegalConsultationState) -> LegalConsultationState:
+    """추가 RAG 검색: 근거 부족 시 보완 검색."""
+    question = state.get("user_question") or state.get("question", "")
+    extra_pack = adaptive_rag(
+        "extra_legal_search",
+        question,
+        filters={"doc_type": ["법령", "판례", "사례집"]},
+        top_k=5,
+    )
+    cases = _extract_cases(extra_pack)
+    laws = _extract_laws(extra_pack)
+    refs = list(state.get("evidence_refs", []))
+    for ctx in extra_pack.contexts:
+        refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+
+    return _merge(
+        state,
+        evidence_refs=refs,
+        cited_cases=list(state.get("cited_cases", [])) + cases,
+        cited_laws=list(state.get("cited_laws", [])) + laws,
+        last_review_status="PASS",
+        trace=_trace("Extra Legal RAG", "additional_legal_search", {"question": question[:80]}, {"added_contexts": len(extra_pack.contexts)}),
+    )
+
+
+def route_after_extra_legal_rag(state: LegalConsultationState) -> str:
+    """추가 검색 후 legal_rag_agent로 재시도."""
+    return "legal_rag_agent"
+
+
+def legal_graph_context_node(state: LegalConsultationState) -> LegalConsultationState:
+    """Neo4j 그래프 컨텍스트 조회 (관계 기반 법률 검증)."""
+    graph_ctx = list(state.get("graph_context", []))
+    try:
+        from common.tools.v7_contracts import fetch_graph_context  # type: ignore
+        question = state.get("user_question") or state.get("question", "")
+        new_ctx = fetch_graph_context({"question": question})
+        graph_ctx.extend(new_ctx)
+    except Exception:
+        pass
+
+    return _merge(
+        state,
+        graph_context=graph_ctx,
+        last_review_status="PASS",
+        trace=_trace("Legal Graph Context", "fetch_graph_context", {}, {"context_count": len(graph_ctx)}),
+    )
+
+
+def route_after_legal_graph_context(state: LegalConsultationState) -> str:
+    """그래프 컨텍스트 조회 후 legal_rag_agent로 재시도."""
+    return "legal_rag_agent"
+
+
+def safe_legal_fallback_node(state: LegalConsultationState) -> LegalConsultationState:
+    """폴백: 안전한 일반 안내 답변 생성."""
+    question = state.get("user_question") or state.get("question", "")
+    safe_answer = (
+        f"'{question[:50]}' 에 대한 정확한 법적 답변을 제공하기 어렵습니다. "
+        "전세사기 피해가 우려되시면 법률구조공단(132) 또는 주택도시보증공사(1566-9009)에 문의하시길 권장합니다.\n\n"
+        + DISCLAIMER
+    )
+    return _merge(
+        state,
+        answer_draft=safe_answer,
+        draft_answer=safe_answer,
+        safe_answer=safe_answer,
+        safe_fallback={"answer": safe_answer, "reason": "max_review_exceeded_or_fail"},
+        trace=_trace("Safe Legal Fallback", "generate_safe_answer", {}, {"answer_length": len(safe_answer)}),
+    )
+
+
+# ── 내부 헬퍼 ─────────────────────────────────────────────────────────────────
+
+def _generate_answer_from_rag(question: str, cases: list, laws: list, pack: Any) -> str:
+    """RAG 컨텍스트 기반 답변 초안 생성."""
+    try:
+        from common.tools.llm import build_chat_llm
+        ctx_text = "\n\n".join(
+            f"[{i+1}] {ctx.title}\n{ctx.text[:500]}"
+            for i, ctx in enumerate(pack.contexts[:5])
+        ) if hasattr(pack, "contexts") else ""
+        llm = build_chat_llm(temperature=0.1)
+        prompt = f"질문: {question}\n\n참고 자료:\n{ctx_text}\n\n위 자료를 바탕으로 친절하고 명확하게 답변해 주세요."
+        response = llm.invoke([("human", prompt)])
+        return response.content if hasattr(response, "content") else str(response)
+    except Exception:
+        case_titles = ", ".join(c.case_name for c in cases[:3]) if cases else "관련 판례 없음"
+        law_titles = ", ".join(l.article for l in laws[:3]) if laws else "관련 법령 없음"
+        return (
+            f"'{question}' 에 대한 검색 결과:\n"
+            f"- 관련 판례: {case_titles}\n"
+            f"- 관련 법령: {law_titles}\n\n"
+            "정확한 법률 해석을 위해서는 전문가 상담을 권장합니다."
+        )
 

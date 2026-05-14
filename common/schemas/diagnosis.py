@@ -28,6 +28,34 @@ class MarketAnalysis:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PdfValidationResult:
+    valid: bool
+    file_path: str | None = None
+    extension: str | None = None
+    file_size_bytes: int | None = None
+    page_count: int | None = None
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ContractSections:
+    full_text: str = ""
+    parties_text: str = ""
+    property_text: str = ""
+    payment_text: str = ""
+    period_text: str = ""
+    special_terms_text: str = ""
+
+
+@dataclass
+class FieldValidationResult:
+    valid: bool
+    missing_fields: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
 class DiagnosisState(TypedDict, total=False):
     session_id: str
     contract_file: str | None
@@ -53,3 +81,21 @@ class DiagnosisState(TypedDict, total=False):
     report: dict[str, Any]
     agent_trace: list[AgentTrace]
     errors: list[str]
+
+    # v7 task-queue fields
+    pending_tasks: list[str]
+    completed_tasks: list[str]
+    task_results: dict[str, Any]
+    review_count: int
+    max_review_count: int
+    last_review_status: str   # "PASS" | "NEED_MORE_EVIDENCE" | "REVISION_REQUIRED" | ...
+    last_reviewed_task: str | None
+
+    # evidence / graph context
+    claims: list[Any]
+    legal_points: list[Any]
+    evidence_refs: list[dict[str, Any]]
+    graph_context: list[Any]
+
+    # JSON 저장 경로 (진단 결과 persist)
+    saved_json_path: str | None

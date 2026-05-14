@@ -99,24 +99,35 @@ def adaptive_rag(task_type: str, query: str, filters: dict | None = None, top_k:
 
 
 def _remote_rag(task_type: str, query: str, filters: dict | None, top_k: int) -> ContextPack | None:
-    base_url = os.getenv("RAG_SERVER_URL", "http://localhost:8000").rstrip("/")
+    configured_url = os.getenv("RAG_SERVER_URL", "http://localhost:8000").rstrip("/")
+    base_urls = [configured_url]
+    if configured_url != "http://localhost:8000":
+        base_urls.append("http://localhost:8000")
     timeout = float(os.getenv("RAG_SERVER_TIMEOUT", "12"))
     session_id = str((filters or {}).get("session_id") or f"diag-{uuid.uuid4().hex[:12]}")
-    try:
-        payload = _post_json(f"{base_url}/api/v1/rag/retrieve", _retrieve_body(task_type, query, filters, top_k, session_id), timeout)
-    except Exception:
+    retrieve_body = _retrieve_body(task_type, query, filters, top_k, session_id)
+    for base_url in base_urls:
         try:
-            payload = _post_json(
-                f"{base_url}/api/v1/chat/query",
-                {
-                    "session_id": session_id,
-                    "message": _build_remote_query(task_type, query, filters),
-                    "history": [],
-                },
-                timeout,
-            )
+            payload = _post_json(f"{base_url}/api/v1/rag/retrieve", retrieve_body, timeout)
+            break
         except Exception:
-            return None
+            try:
+                payload = _post_json(
+                    f"{base_url}/api/v1/chat/query",
+                    {
+                        "session_id": session_id,
+                        "message": _build_remote_query(task_type, query, filters),
+                        "history": [],
+                    },
+                    timeout,
+                )
+                break
+            except Exception:
+                payload = None
+    else:
+        payload = None
+    if payload is None:
+        return None
 
     evidence = normalize_evidence_refs(raw_rag_items(payload))[:top_k]
     contexts = references_to_contexts(evidence)
@@ -184,11 +195,6 @@ def _fallback_rag(task_type: str, query: str, top_k: int) -> ContextPack:
 
 
 def _post_json(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
-    if requests is not None:
-        response = requests.post(url, json=body, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-
     request = urllib.request.Request(
         url,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -199,6 +205,10 @@ def _post_json(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if requests is not None:
+            response = requests.post(url, json=body, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
         raise RuntimeError(exc.read().decode("utf-8", errors="replace")) from exc
 
 

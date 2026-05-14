@@ -7,35 +7,55 @@ from typing import Any, TypedDict
 class LegalConsultationState(TypedDict, total=False):
     session_id: str
     user_question: str
-    conversation_history: list[dict[str, str]]
+    conversation_history: list
 
     intent: str
-    question_type: str | None
+    question_type: str
     route: str
     needs_rag: bool
     needs_clarification: bool
-    clarification_questions: list[str]
+    clarification_questions: list
     reason: str
     supervisor_status: str
 
-    legal_rag_result: dict[str, Any]
-    counselor_result: dict[str, Any]
+    legal_rag_result: dict
+    counselor_result: dict
 
-    current_task: str | None
-    current_agent: str | None
+    current_task: str
+    current_agent: str
     review_count: int
     max_review_count: int
-    review_result: dict[str, Any]
-    claims: list[dict[str, Any]]
-    legal_points: list[str]
-    evidence_refs: list[dict[str, Any]]
-    graph_context: list[dict[str, Any]]
-    fallback_level: str | None
-    safe_fallback: dict[str, Any]
+    review_result: dict
+    last_review_status: str
+    claims: list
+    legal_points: list
+    evidence_refs: list
+    graph_context: list
+    fallback_level: str
+    safe_fallback: dict
+
+    # legal_consultation_nodes.py 필드
+    question: str
+    normalized_query: str
+    question_type: str
+    internal_case_context: Any
+    internal_law_context: Any
+    cited_cases: list
+    cited_laws: list
+    external_sources: list
+    answer_draft: str
+    recommended_actions: list
+    basis_type: str
+    evidence_quality: Any
+    confidence: str
+    needs_external_search: bool
+    used_external_search: bool
+    final_answer: str
+    disclaimer: str
 
     draft_answer: str
     safe_answer: str
-    report: dict[str, Any]
+    report: dict
 
-    agent_trace: list[dict[str, Any]]
-    errors: list[str]
+    agent_trace: list
+    errors: list

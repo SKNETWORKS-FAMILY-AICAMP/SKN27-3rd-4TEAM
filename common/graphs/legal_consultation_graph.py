@@ -35,7 +35,7 @@ def build_legal_consultation_graph():
     graph.add_node("legal_review_node", legal_review_node)
     graph.add_node("extra_rag_search", extra_legal_rag_search_node)
     graph.add_node("graph_context_node", legal_graph_context_node)
-    graph.add_node("safe_fallback", safe_legal_fallback_node)
+    graph.add_node("safe_legal_fallback", safe_legal_fallback_node)
     graph.add_node("legal_guardrail", legal_guardrail_node)
     graph.add_node("consultation_report", consultation_report_node)
 
@@ -67,12 +67,12 @@ def build_legal_consultation_graph():
             "graph_context_node": "graph_context_node",
             "friendly_counselor_agent": "friendly_counselor_agent",
             "legal_rag_agent": "legal_rag_agent",
-            "safe_fallback": "safe_fallback",
+            "safe_fallback": "safe_legal_fallback",
         },
     )
     graph.add_conditional_edges("extra_rag_search", route_after_extra_legal_rag, {"legal_rag_agent": "legal_rag_agent"})
     graph.add_conditional_edges("graph_context_node", route_after_legal_graph_context, {"legal_rag_agent": "legal_rag_agent"})
-    graph.add_edge("safe_fallback", "legal_guardrail")
+    graph.add_edge("safe_legal_fallback", "legal_guardrail")
     graph.add_edge("legal_guardrail", "consultation_report")
     graph.add_edge("consultation_report", END)
     return graph.compile()

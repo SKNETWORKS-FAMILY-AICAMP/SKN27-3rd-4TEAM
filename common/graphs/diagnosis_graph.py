@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
@@ -30,6 +31,35 @@ from common.nodes.diagnosis_nodes import (
 from common.schemas.diagnosis import DiagnosisState
 
 
+# ── JSON 저장 노드 (flowchart: "JSON 저장 - 진단 결과 persist") ───────────────
+
+def json_save_node(state: DiagnosisState) -> DiagnosisState:
+    """report_writer 결과를 JSON 파일로 저장하여 chat의 JSON reader가 불러올 수 있게 함."""
+    session_id = state.get("session_id", "unknown")
+    report = state.get("report", {})
+
+    save_dir = pathlib.Path(__file__).resolve().parents[2] / "data" / "diagnosis_results"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / f"{session_id}.json"
+
+    payload = {
+        "session_id": session_id,
+        "risk_score": state.get("risk_score", 0),
+        "risk_level": state.get("risk_level", "UNKNOWN"),
+        "report": report,
+        "contract_file": state.get("contract_file"),
+    }
+
+    try:
+        save_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+        saved_path = str(save_path)
+    except Exception as exc:
+        saved_path = None
+        print(f"[json_save_node] 저장 실패: {exc}")
+
+    return {**dict(state), "saved_json_path": saved_path}
+
+
 def build_diagnosis_graph():
     """Build the v7 task-queue + review-supervisor diagnosis graph."""
     from langgraph.graph import END, START, StateGraph
@@ -51,6 +81,7 @@ def build_diagnosis_graph():
     graph.add_node("safe_contract_fallback", safe_contract_fallback_node)
     graph.add_node("risk_judge", risk_judge_node)
     graph.add_node("report_writer", report_writer_node)
+    graph.add_node("json_save", json_save_node)
 
     graph.add_edge(START, "contract_intake")
     graph.add_conditional_edges(
@@ -119,7 +150,8 @@ def build_diagnosis_graph():
     )
     graph.add_edge("safe_contract_fallback", "contract_supervisor")
     graph.add_edge("risk_judge", "report_writer")
-    graph.add_edge("report_writer", END)
+    graph.add_edge("report_writer", "json_save")  # flowchart: persist diagnosis JSON
+    graph.add_edge("json_save", END)
     return graph.compile()
 
 
@@ -143,7 +175,7 @@ def run_diagnosis(contract_file: str | None = None, session_id: str = "demo-sess
         "graph_context": [],
     }
     try:
-        return build_diagnosis_graph().invoke(initial_state)
+        return build_diagnosis_graph().invoke(initial_state, config={"recursion_limit": 100})
     except ModuleNotFoundError:
         return _run_without_langgraph(initial_state)
 
@@ -183,7 +215,8 @@ def _run_without_langgraph(state: DiagnosisState) -> DiagnosisState:
             state = safe_contract_fallback_node(state)
         state = contract_supervisor_node(state)
     state = risk_judge_node(state)
-    return report_writer_node(state)
+    state = report_writer_node(state)
+    return json_save_node(state)
 
 
 def _json_default(value: Any) -> Any:

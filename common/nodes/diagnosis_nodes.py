@@ -286,4 +286,357 @@ def _trace(agent: str, action: str, inputs: dict[str, Any], outputs: dict[str, A
     return AgentTrace(agent=agent, action=action, inputs=inputs, outputs=outputs)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# v7 task-queue nodes (added to match diagnosis_graph.py imports)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_TASK_ORDER = ["special_clause", "market_risk", "ownership_risk", "insurance_risk", "required_check", "legal_basis"]
+
+
+def contract_supervisor_node(state: DiagnosisState) -> DiagnosisState:
+    """Task-queue supervisor: initialises pending_tasks or marks current task done."""
+    pending = list(state.get("pending_tasks", []))
+    completed = list(state.get("completed_tasks", []))
+
+    if not pending and not completed:
+        # First call – build task queue based on contract content
+        fields = state.get("contract_fields", {})
+        queue: list[str] = []
+        if fields.get("special_terms"):
+            queue.append("special_clause")
+        queue.extend(["market_risk", "required_check", "ownership_risk", "insurance_risk", "legal_basis"])
+        pending = [t for t in queue if t not in completed]
+
+    return _merge(
+        state,
+        pending_tasks=pending,
+        completed_tasks=completed,
+        trace=_trace(
+            "Contract Supervisor",
+            "manage_task_queue",
+            {"completed": completed},
+            {"pending": pending},
+        ),
+    )
+
+
+def route_after_supervisor(state: DiagnosisState) -> str:
+    """Route to next pending task or to risk_judge when all done."""
+    pending = state.get("pending_tasks", [])
+    if not pending:
+        return "judge"
+    return pending[0]
+
+
+def contract_review_node(state: DiagnosisState) -> DiagnosisState:
+    """Simple review gate: checks if the last agent produced findings."""
+    review_count = state.get("review_count", 0) + 1
+    last_task = (state.get("pending_tasks") or [None])[0]
+
+    # Determine review status deterministically
+    has_evidence = bool(state.get("evidence_refs") or state.get("context_packs"))
+    status = "PASS" if has_evidence else "NEED_MORE_EVIDENCE"
+
+    # Mark task complete and advance queue
+    pending = list(state.get("pending_tasks", []))
+    completed = list(state.get("completed_tasks", []))
+    if pending:
+        done = pending.pop(0)
+        if done not in completed:
+            completed.append(done)
+
+    return _merge(
+        state,
+        review_count=review_count,
+        last_review_status=status,
+        last_reviewed_task=last_task,
+        pending_tasks=pending,
+        completed_tasks=completed,
+        trace=_trace(
+            "Contract Review Supervisor",
+            "review_agent_output",
+            {"task": last_task, "review_count": review_count},
+            {"status": status},
+        ),
+    )
+
+
+def route_after_review(state: DiagnosisState) -> str:
+    """Decide what to do after review."""
+    status = state.get("last_review_status", "PASS")
+    review_count = state.get("review_count", 0)
+    max_reviews = state.get("max_review_count", 2)
+
+    if status == "PASS" or review_count >= max_reviews:
+        return "supervisor"
+    if status == "NEED_MORE_EVIDENCE":
+        return "extra_rag"
+    if status == "NEED_GRAPH_CONTEXT":
+        return "graph_context"
+    if status in ("REVISION_REQUIRED", "FAIL"):
+        return "fallback"
+    return "supervisor"
+
+
+def extra_rag_search_node(state: DiagnosisState) -> DiagnosisState:
+    """Additional RAG search when initial evidence is insufficient."""
+    last_task = state.get("last_reviewed_task") or "general"
+    query = state.get("contract_text", "")[:1000] or "전세계약 위험 확인"
+    context_pack = adaptive_rag(f"extra_{last_task}", query, filters={"doc_type": ["사례집", "법령", "판례"]}, top_k=5)
+    packs = dict(state.get("context_packs", {}))
+    packs[f"extra_{last_task}"] = context_pack
+
+    refs = list(state.get("evidence_refs", []))
+    for ctx in context_pack.contexts:
+        refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+
+    return _merge(
+        state,
+        context_packs=packs,
+        evidence_refs=refs,
+        last_review_status="PASS",
+        trace=_trace("Extra RAG Search", "additional_rag_retrieval", {"task": last_task}, {"added_contexts": len(context_pack.contexts)}),
+    )
+
+
+def route_after_extra_rag(state: DiagnosisState) -> str:
+    """After extra RAG, re-route to the task that needed more evidence."""
+    last_task = state.get("last_reviewed_task")
+    if last_task and last_task in _TASK_ORDER:
+        return last_task
+    return "fallback"
+
+
+def graph_context_node(state: DiagnosisState) -> DiagnosisState:
+    """Fetch graph-DB context for relationship-based validation."""
+    # Lightweight stub – attempts Neo4j if available, else returns empty context
+    graph_ctx = list(state.get("graph_context", []))
+    try:
+        from common.tools.v7_contracts import fetch_graph_context  # type: ignore
+        fields = state.get("contract_fields", {})
+        new_ctx = fetch_graph_context(fields)
+        graph_ctx.extend(new_ctx)
+    except Exception:
+        pass
+
+    return _merge(
+        state,
+        graph_context=graph_ctx,
+        last_review_status="PASS",
+        trace=_trace("Graph Context Agent", "fetch_neo4j_context", {}, {"context_count": len(graph_ctx)}),
+    )
+
+
+def route_after_graph_context(state: DiagnosisState) -> str:
+    """After graph context fetch, re-route to the task that needed it."""
+    last_task = state.get("last_reviewed_task")
+    if last_task and last_task in _TASK_ORDER:
+        return last_task
+    return "fallback"
+
+
+def safe_contract_fallback_node(state: DiagnosisState) -> DiagnosisState:
+    """Fallback: clear review loop and add a generic warning finding."""
+    fallback_finding = RiskFinding(
+        code="FALLBACK_INCOMPLETE_REVIEW",
+        title="일부 항목 검토 미완료",
+        severity="MEDIUM",
+        score_delta=5,
+        description="RAG 근거 부족으로 일부 항목을 완전히 검토하지 못했습니다. 전문가 상담을 권장합니다.",
+        required_action="공인중개사 또는 법률 전문가의 추가 확인을 받으세요.",
+        source="safe_fallback",
+    )
+    existing = list(state.get("risk_findings", []))
+    codes = {f.code for f in existing}
+    if fallback_finding.code not in codes:
+        existing.append(fallback_finding)
+
+    # Clear pending to break loops
+    return _merge(
+        state,
+        pending_tasks=[],
+        review_count=0,
+        last_review_status="PASS",
+        risk_findings=existing,
+        trace=_trace("Safe Fallback", "inject_fallback_finding", {}, {"finding": fallback_finding.code}),
+    )
+
+
+# ── Agent node aliases (rename wrappers for graph compatibility) ───────────────
+
+def special_clause_agent_node(state: DiagnosisState) -> DiagnosisState:
+    """ReAct wrapper: special clause analysis → updates evidence_refs."""
+    state = special_clause_analysis_node(state)
+    refs = list(state.get("evidence_refs", []))
+    for pack in state.get("context_packs", {}).values():
+        for ctx in pack.contexts:
+            refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+    return _merge(state, evidence_refs=refs)
+
+
+def market_risk_agent_node(state: DiagnosisState) -> DiagnosisState:
+    """ReAct wrapper: market price risk analysis with market RAG evidence."""
+    state = market_analysis_node(state)
+    fields = state.get("contract_fields", {})
+    analysis = state.get("market_analysis")
+    ratio = getattr(analysis, "estimated_jeonse_ratio", None) if analysis else None
+    query = (
+        "전세 가격 위험도 전세가율 깡통전세 보증금 반환 위험 "
+        f"동={fields.get('dong_name') or ''} "
+        f"유형={fields.get('housing_type') or ''} "
+        f"보증금={fields.get('deposit_amount') or ''} "
+        f"면적={fields.get('exclusive_area_m2') or ''} "
+        f"전세가율={ratio if ratio is not None else ''}"
+    )
+    context_pack = adaptive_rag(
+        "market_risk_analysis",
+        query,
+        filters={
+            "tables": ["market_risk_guides", "public_guides", "case_documents"],
+            "domain": ["market_risk", "jeonse_ratio", "market_analysis"],
+            "source_type": ["market_data", "public_guide", "case"],
+            "include_graph_context": True,
+        },
+        top_k=5,
+    )
+    packs = dict(state.get("context_packs", {}))
+    packs["market_risk_analysis"] = context_pack
+    refs = list(state.get("evidence_refs", []))
+    for ctx in context_pack.contexts:
+        ref = {"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score}
+        if ref not in refs:
+            refs.append(ref)
+    graph_context = list(state.get("graph_context", []))
+    graph_context.extend(context_pack.graph_context)
+    return _merge(
+        state,
+        context_packs=packs,
+        evidence_refs=refs,
+        graph_context=graph_context,
+        trace=_trace(
+            "Market Risk Agent",
+            "analyze_market_with_rag",
+            {"deposit": fields.get("deposit_amount"), "dong": fields.get("dong_name")},
+            {
+                "finding_count": len(state.get("market_findings", [])),
+                "context_count": len(context_pack.contexts),
+                "graph_context_count": len(context_pack.graph_context),
+            },
+        ),
+    )
+
+
+def ownership_risk_agent_node(state: DiagnosisState) -> DiagnosisState:
+    """Ownership / registry risk analysis (RAG-based)."""
+    fields = state.get("contract_fields", {})
+    query = (
+        f"등기부 권리관계 확인 위험: 주소={fields.get('address')}, "
+        f"임대인={fields.get('landlord_name')}, 유형={fields.get('housing_type')}"
+    )
+    context_pack = adaptive_rag("ownership_risk", query, filters={"doc_type": ["사례집", "법령", "판례"]}, top_k=5)
+
+    findings: list[RiskFinding] = [
+        RiskFinding(
+            code="OWNERSHIP_REGISTRY_CHECK",
+            title="등기부 권리관계 현장 확인 필요",
+            severity="HIGH",
+            score_delta=20,
+            description="근저당권·압류·가압류·신탁·가등기 등 권리제한 사항은 등기부등본으로만 확인 가능합니다.",
+            required_action="잔금 전일 등기부등본을 직접 발급·열람하여 갑구·을구를 확인하세요.",
+            source="ownership_risk_agent",
+        )
+    ]
+
+    packs = dict(state.get("context_packs", {}))
+    packs["ownership_risk"] = context_pack
+    refs = list(state.get("evidence_refs", []))
+    for ctx in context_pack.contexts:
+        refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+
+    return _merge(
+        state,
+        context_packs=packs,
+        evidence_refs=refs,
+        risk_findings=list(state.get("risk_findings", [])) + findings,
+        trace=_trace("Ownership Risk Agent", "analyze_registry_risk", {"address": fields.get("address")}, {"finding_count": len(findings)}),
+    )
+
+
+def insurance_risk_agent_node(state: DiagnosisState) -> DiagnosisState:
+    """Deposit insurance / HUG coverage risk analysis."""
+    fields = state.get("contract_fields", {})
+    query = f"전세보증보험 가입 가능성 분석: 보증금={fields.get('deposit_amount')}, 유형={fields.get('housing_type')}"
+    context_pack = adaptive_rag("insurance_risk", query, filters={"doc_type": ["사례집", "법령"]}, top_k=5)
+
+    deposit = fields.get("deposit_amount") or 0
+    findings: list[RiskFinding] = []
+    if isinstance(deposit, (int, float)) and deposit > 0:
+        findings.append(
+            RiskFinding(
+                code="INSURANCE_HUG_CHECK",
+                title="전세보증보험 가입 가능 여부 확인 필요",
+                severity="MEDIUM",
+                score_delta=8,
+                description="HUG·SGI·HF 보증보험 가입 가능 여부를 사전에 확인해야 보증금 미반환 리스크를 줄일 수 있습니다.",
+                required_action="전세보증보험 가입 조건(전세가율·주택 유형·채권최고액 등)을 계약 전 확인하세요.",
+                source="insurance_risk_agent",
+            )
+        )
+
+    packs = dict(state.get("context_packs", {}))
+    packs["insurance_risk"] = context_pack
+    refs = list(state.get("evidence_refs", []))
+    for ctx in context_pack.contexts:
+        refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+
+    return _merge(
+        state,
+        context_packs=packs,
+        evidence_refs=refs,
+        risk_findings=list(state.get("risk_findings", [])) + findings,
+        trace=_trace("Insurance Risk Agent", "analyze_deposit_insurance", {"deposit": deposit}, {"finding_count": len(findings)}),
+    )
+
+
+def legal_basis_agent_node(state: DiagnosisState) -> DiagnosisState:
+    """Legal basis validation: cross-checks contract terms against statutes."""
+    fields = state.get("contract_fields", {})
+    query = f"주택임대차보호법 위반 여부 확인: 계약 기간={fields.get('contract_period')}, 보증금={fields.get('deposit_amount')}"
+    context_pack = adaptive_rag("legal_basis", query, filters={"doc_type": ["법령", "판례"]}, top_k=5)
+
+    findings: list[RiskFinding] = []
+    period = fields.get("contract_period") or ""
+    if period and "1년" in str(period):
+        findings.append(
+            RiskFinding(
+                code="LEGAL_MIN_PERIOD",
+                title="임대차 최단 기간 미달 가능성",
+                severity="MEDIUM",
+                score_delta=10,
+                description="주택임대차보호법상 최단 임대차 기간은 2년입니다. 1년 계약은 임차인이 2년을 주장할 수 있습니다.",
+                required_action="계약 기간을 2년으로 명시하거나 법적 최단 기간 보호를 숙지하세요.",
+                source="legal_basis_agent",
+            )
+        )
+
+    packs = dict(state.get("context_packs", {}))
+    packs["legal_basis"] = context_pack
+    refs = list(state.get("evidence_refs", []))
+    for ctx in context_pack.contexts:
+        refs.append({"source_id": ctx.source_id, "title": ctx.title, "doc_type": ctx.doc_type, "score": ctx.score})
+
+    return _merge(
+        state,
+        context_packs=packs,
+        evidence_refs=refs,
+        risk_findings=list(state.get("risk_findings", [])) + findings,
+        trace=_trace("Legal Basis Agent", "validate_contract_legality", {"period": period}, {"finding_count": len(findings)}),
+    )
+
+
+def required_check_agent_node(state: DiagnosisState) -> DiagnosisState:
+    """Alias: required check items (계약서 외 추가 확인 사항)."""
+    return required_check_node(state)
+
+
 

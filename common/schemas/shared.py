@@ -32,7 +32,7 @@ class RetrievedContext:
     doc_type: str
     text: str
     score: float = 0.0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -49,54 +49,56 @@ class GraphContextItem:
     node: str
     relation: str
     target: str
-    severity: str | None = None
-    confidence: Confidence | None = None
-    source: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    severity: str = "LOW"
+    confidence: str = "MEDIUM"
+    source: str = "unknown"
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
 class ContextPack:
     task_type: str
     query: str
-    contexts: list[RetrievedContext] = field(default_factory=list)
-    quality: RetrievalQuality = field(default_factory=lambda: RetrievalQuality(False, 0.0, "not evaluated"))
-    graph_context: list[GraphContextItem] = field(default_factory=list)
+    contexts: list = field(default_factory=list)
+    quality: RetrievalQuality = field(
+        default_factory=lambda: RetrievalQuality(False, 0.0, "not evaluated")
+    )
+    graph_context: list = field(default_factory=list)
 
 
 @dataclass
 class Claim:
-    """Reviewable claim. Claims, not legal_points, must be tied to evidence."""
+    """Reviewable claim tied to evidence."""
 
     claim_id: str
     text: str
-    task: str | None = None
-    evidence_ids: list[str] = field(default_factory=list)
-    graph_context_ids: list[str] = field(default_factory=list)
-    confidence: Confidence = "MEDIUM"
-    metadata: dict[str, Any] = field(default_factory=dict)
+    task: str = ""
+    evidence_ids: list = field(default_factory=list)
+    graph_context_ids: list = field(default_factory=list)
+    confidence: str = "MEDIUM"
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
 class ReviewResult:
     status: ReviewStatus
     reason: str
-    required_action: str | None = None
-    missing_evidence_query: str | None = None
-    graph_context_query: str | None = None
-    target_agent: str | None = None
-    confidence: Confidence = "MEDIUM"
+    required_action: str = ""
+    missing_evidence_query: str = ""
+    graph_context_query: str = ""
+    target_agent: str = ""
+    confidence: str = "MEDIUM"
 
 
 @dataclass
 class RiskFinding:
     code: str
     title: str
-    severity: FindingSeverity
+    severity: str
     score_delta: int
     description: str
-    evidence: list[str] = field(default_factory=list)
-    required_action: str | None = None
+    evidence: list = field(default_factory=list)
+    required_action: str = ""
     source: str = "agent"
 
 
@@ -104,5 +106,5 @@ class RiskFinding:
 class AgentTrace:
     agent: str
     action: str
-    inputs: dict[str, Any] = field(default_factory=dict)
-    outputs: dict[str, Any] = field(default_factory=dict)
+    inputs: dict = field(default_factory=dict)
+    outputs: dict = field(default_factory=dict)
