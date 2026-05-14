@@ -310,6 +310,12 @@ class ReportWriter:
     def _score(self, risk_factors: list[RiskFactor]) -> tuple[float, str]:
         weight = {"HIGH": 25.0, "MEDIUM": 10.0, "LOW": 3.0}
         score = min(sum(weight.get(rf.severity, 5.0) for rf in risk_factors), 100.0)
+
+        # HIGH 위험요소가 하나라도 있으면 최소 "주의"(50점) 보장
+        has_high = any(rf.severity == "HIGH" for rf in risk_factors)
+        if has_high and score < 50.0:
+            score = 50.0
+
         if score >= 80:
             return round(score, 1), "위험"
         if score >= 50:

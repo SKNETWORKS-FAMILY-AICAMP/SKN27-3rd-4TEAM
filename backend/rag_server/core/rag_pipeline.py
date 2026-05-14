@@ -151,6 +151,8 @@ class RAGPipeline:
         return {
             "answer": response.content if hasattr(response, "content") else str(response),
             "references": self._build_references(raw_results) + self._build_graph_references(graph_results),
+            # graph_context: ChatAgentService → answer_writer 에서 사용
+            "graph_context": self._build_graph_context_items(graph_results),
         }
 
     # ── 계약서 진단 ───────────────────────────────────────
@@ -386,6 +388,17 @@ class RAGPipeline:
                 )
             )
         return references
+
+    def _build_graph_context_items(self, graph_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """graph_results → GraphContextItem dict 리스트 (ChatResponse.graph_context 용)."""
+        items: list[dict[str, Any]] = []
+        for item in graph_results:
+            node   = str(item.get("title") or item.get("source_id") or "UNKNOWN")
+            target = str(item.get("summary") or "")
+            laws   = item.get("laws") or []
+            relation = f"법령:{laws[0]}" if laws else str(item.get("schema") or "관계")
+            items.append({"node": node, "relation": relation, "target": target})
+        return items
 
     def _build_graph_references(self, graph_results: list[dict[str, Any]]) -> list[RagReference]:
         references: list[RagReference] = []

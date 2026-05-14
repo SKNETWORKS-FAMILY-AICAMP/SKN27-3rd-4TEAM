@@ -191,16 +191,19 @@ class AnswerWriter:
 
 
 class ChatAgentService:
-    """Orchestrates chat_supervisor, JSON reader, and legal/general agents."""
+    """Orchestrates chat via LangGraph ChatGraph.
+
+    그래프 흐름:
+      chat_supervisor → legal_agent | general_agent → answer_writer
+    """
 
     def __init__(self, settings: Settings, rag_pipeline: RAGPipeline):
         self._settings = settings
         self._rag = rag_pipeline
-        self._reader = DiagnosisJsonReader(settings)
-        self._supervisor = ChatSupervisor()
-        self._legal_agent = LegalAgent(rag_pipeline)
-        self._general_agent = GeneralAgent()
-        self._writer = AnswerWriter()
+        # LangGraph: ChatGraph 를 서비스 생성 시 한 번만 컴파일
+        from rag_server.services.graph_agents import ChatState, build_chat_graph
+        self._graph = build_chat_graph(settings, rag_pipeline)
+        self._ChatState = ChatState
 
     async def answer(
         self,
@@ -208,42 +211,13 @@ class ChatAgentService:
         message: str,
         history: list[dict[str, Any]],
     ) -> ChatResponse:
-        diagnosis_context = self._reader.read_latest(session_id)
-        decision = self._supervisor.classify(
-            message=message,
-            has_diagnosis_context=diagnosis_context is not None,
-        )
-
-        if decision.question_type == "general":
-            return self._writer.build(
-                session_id=session_id,
-                answer=self._general_agent.answer(message),
-                agent_trace=[
-                    "supervisor:question",
-                    "chat_supervisor:general",
-                    "general_agent",
-                    "answer_writer",
-                ],
-            )
-
-        context_for_agent = diagnosis_context if decision.needs_diagnosis_context else None
-        result = await self._legal_agent.answer(
-            session_id=session_id,
-            message=message,
-            history=history,
-            diagnosis_context=context_for_agent,
-        )
-        trace = [
-            "supervisor:question",
-            "chat_supervisor:legal",
-        ]
-        if context_for_agent:
-            trace.append("diagnosis_json_reader")
-        trace.extend(["legal_agent", "rag_vector_graph", "answer_writer"])
-        return self._writer.build(
-            session_id=session_id,
-            answer=result.get("answer", ""),
-            references=result.get("references", []),
-            graph_context=result.get("graph_context", []),
-            agent_trace=trace,
-        )
+        # LangGraph ChatGraph 실행
+        # chat_supervisor → [legal_agent | general_agent] → answer_writer
+        initial_state: dict[str, Any] = {
+            "session_id": session_id,
+            "message":    message,
+            "history":    history,
+        }
+        final_state = await self._graph.ainvoke(initial_state)
+        response_dict: dict[str, Any] = final_state.get("response") or {}
+        return ChatResponse(**response_dict)

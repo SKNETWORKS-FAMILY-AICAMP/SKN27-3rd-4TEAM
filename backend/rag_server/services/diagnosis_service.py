@@ -8,12 +8,13 @@ from psycopg2.extras import Json
 from rag_server.config import Settings
 from rag_server.models.schemas import DiagnosisResponse, RiskFactor
 from rag_server.services.contract_parser import ContractParser
-from rag_server.services.diagnosis_agents import run_contract_diagnosis_flow
+from rag_server.services.graph_agents import DiagnosisState, build_contract_diagnosis_graph
 
 
 class DiagnosisService:
     def __init__(self, settings: Settings):
         self._settings = settings
+        self._graph = build_contract_diagnosis_graph(settings)
 
     async def diagnose_text(self, session_id: str, contract_text: str) -> DiagnosisResponse:
         contract_info = ContractParser.from_text(contract_text)
@@ -36,16 +37,25 @@ class DiagnosisService:
         return await self._diagnose_contract_info(session_id, contract_info)
 
     async def _diagnose_contract_info(self, session_id: str, contract_info) -> DiagnosisResponse:
-        response = await run_contract_diagnosis_flow(
-            session_id=session_id,
-            contract_info=contract_info,
-            settings=self._settings,
-        )
+        initial_state: DiagnosisState = {
+            "session_id":    session_id,
+            "contract_info": contract_info,
+        }
+        final_state = await self._graph.ainvoke(initial_state)
+        response: DiagnosisResponse = final_state["response"]
         if _is_successful_diagnosis(response):
             self._save_log(response)
         return response
 
     def _save_log(self, response: DiagnosisResponse) -> None:
+        INSERT_SQL = (
+            "INSERT INTO diagnosis_logs "
+            "(session_id, input_text, risk_score, risk_level, risk_factors, "
+            " rag_references, result_summary, "
+            " estimated_sale_price, jeonse_ratio, contract_info) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT DO NOTHING"
+        )
         try:
             conn = psycopg2.connect(
                 host=self._settings.DB_HOST,
@@ -57,16 +67,13 @@ class DiagnosisService:
             cur = conn.cursor()
             ci = response.contract_info
             contract_info_json = Json(ci.model_dump()) if ci else Json({})
-            jeonse_ratio = round(float(ci.jeonse_ratio), 2) if ci and ci.jeonse_ratio is not None else None
+            jeonse_ratio = (
+                round(float(ci.jeonse_ratio), 2)
+                if ci and ci.jeonse_ratio is not None
+                else None
+            )
             cur.execute(
-                """
-                INSERT INTO diagnosis_logs
-                (session_id, input_text, risk_score, risk_level, risk_factors,
-                 rag_references, result_summary,
-                 estimated_sale_price, jeonse_ratio, contract_info)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
+                INSERT_SQL,
                 (
                     response.session_id,
                     (ci.raw_text or "")[:10000] if ci else "",
@@ -92,7 +99,7 @@ class DiagnosisService:
         score = min(sum(weight.get(rf.severity, 5.0) for rf in risk_factors), 100.0)
         if score >= 80:
             level = "위험"
-        elif score >= 60:
+        elif score >= 50:
             level = "주의"
         else:
             level = "안전"
