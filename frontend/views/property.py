@@ -18,12 +18,75 @@ DETAILS = {
 
 def _selected_record():
     rec_id = st.session_state.get("selected_record_id", 1)
-    return next((r for r in RECORDS if r["id"] == rec_id), RECORDS[0])
+    records = st.session_state.get("history_records", RECORDS)
+    return next((r for r in records if str(r["id"]) == str(rec_id)), RECORDS[0])
+
+
+def _detail_for_record(rec: dict):
+    """진단 기록 데이터에서 상세 화면용 위험 항목을 만든다."""
+    risks = []
+    for factor in rec.get("risk_factors", []) or []:
+        severity = str(factor.get("severity", "")).upper()
+        tone = "danger" if severity in {"HIGH", "CRITICAL"} else "caution" if severity == "MEDIUM" else "safe"
+        meta = "치명" if tone == "danger" else "주의" if tone == "caution" else "안전"
+        risks.append(
+            (
+                factor.get("description") or factor.get("factor_id") or "문서 기반 확인 항목",
+                meta,
+                tone,
+                factor.get("advice") or "업로드 문서 원문을 기준으로 추가 확인이 필요합니다.",
+            )
+        )
+
+    if risks:
+        return {
+            "building": "업로드 문서 기준",
+            "sale": "-",
+            "risks": risks,
+        }
+
+    if rec["id"] in DETAILS:
+        return DETAILS[rec["id"]]
+
+    if not risks:
+        risks = [
+            (
+                rec.get("summary") or "업로드 문서 기반 진단 결과",
+                LEVEL_KO.get(rec.get("level"), "진단"),
+                rec.get("level", "caution"),
+                "진단 기록에 저장된 요약 정보를 기준으로 표시합니다.",
+            )
+        ]
+
+    return {
+        "building": "업로드 문서 기준",
+        "sale": "-",
+        "risks": risks,
+    }
+
+
+def _render_uploaded_document(rec: dict) -> None:
+    """업로드 진단 기록의 요약을 표시한다."""
+    summary = rec.get("summary")
+    if not summary:
+        return
+
+    st.markdown("### 업로드 문서 내용")
+    if summary:
+        st.markdown(
+            f"""
+            <div class="tw-card">
+              <b>진단 요약</b>
+              <div style="margin-top:8px;color:var(--gray-700);line-height:1.6">{summary}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render():
     rec = _selected_record()
-    detail = DETAILS.get(rec["id"], DETAILS[1])
+    detail = _detail_for_record(rec)
     status_type = {"danger": "danger", "caution": "caution", "safe": "safe"}[rec["level"]]
 
     st.markdown(
@@ -56,6 +119,10 @@ def render():
     )
 
     section_divider()
+
+    _render_uploaded_document(rec)
+    if rec.get("summary") or rec.get("input_text"):
+        section_divider()
 
     info_col, risk_col = st.columns([1, 1.15])
 

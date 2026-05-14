@@ -156,6 +156,9 @@ def normalize_backend_record(row: dict[str, Any]) -> dict[str, Any]:
         "hug": "-",
         "summary": summary,
         "session_id": session_id,
+        "input_text": row.get("input_text") or "",
+        "risk_factors": row.get("risk_factors") or [],
+        "rag_references": row.get("rag_references") or [],
     }
 
 

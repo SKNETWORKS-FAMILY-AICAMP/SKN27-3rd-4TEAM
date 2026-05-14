@@ -133,7 +133,7 @@ async def get_diagnosis_logs(
         if session_id:
             cur.execute(
                 """
-                SELECT id, session_id, risk_score, risk_level, result_summary, created_at
+                SELECT id, session_id, input_text, risk_score, risk_level, risk_factors, rag_references, result_summary, created_at
                 FROM diagnosis_logs
                 WHERE session_id = %s
                 ORDER BY created_at DESC
@@ -144,7 +144,7 @@ async def get_diagnosis_logs(
         else:
             cur.execute(
                 """
-                SELECT id, session_id, risk_score, risk_level, result_summary, created_at
+                SELECT id, session_id, input_text, risk_score, risk_level, risk_factors, rag_references, result_summary, created_at
                 FROM diagnosis_logs
                 ORDER BY created_at DESC
                 LIMIT %s
