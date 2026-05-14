@@ -273,7 +273,7 @@ horizon_metrics/24m/all_model_metrics.json
 1개월, 3개월 모델은 baseline보다 MAPE가 나쁘므로 가격 예측용 최종 모델로는 약합니다.
 6개월, 12개월, 24개월 모델은 baseline보다 MAPE가 개선되었습니다.
 전세계약 기간이 보통 24개월이라는 점을 고려하면, 서비스/에이전트에서는 24개월 모델을 primary로 쓰는 것이 가장 자연스럽습니다.
-다만 24개월 모델은 overfit severe=True이므로 단독 판단이 아니라 보조 지표로 설명해야 합니다.
+다만 24개월 모델은 overfit severe=True이므로 최종 가격 위험도는 24개월 LightGBM으로 산정하되, 현재 시세와 면적구간 시세를 함께 설명해야 합니다.
 ```
 
 
@@ -305,12 +305,12 @@ LightGBM + CatBoost + XGBoost
 | 3개월 | True | False | 경고는 있으나 severe 아님 |
 | 6개월 | True | False | 경고는 있으나 severe 아님 |
 | 12개월 | True | False | 경고는 있으나 severe 아님 |
-| 24개월 | True | True | train/valid 성능 차이가 커서 강한 과적합 경고 |
+| 24개월 | True | True | train/valid 성능 차이가 커서 과적합 가능성 있음 |
 
 따라서 최종 답변에서는 24개월 모델 결과를 다음처럼 표현해야 합니다.
 
 ```text
-24개월 모델은 전세계약 기간과 맞고 baseline보다 성능은 좋지만, 과적합 severe 경고가 있으므로 법률/특약/권리관계 검토와 함께 보조 지표로 사용해야 합니다.
+24개월 모델은 전세계약 기간과 맞고 baseline보다 성능은 좋기 때문에 최종 가격 위험도 산정에 사용합니다. 다만 과적합 severe 경고가 있으므로 법률/특약/권리관계 검토와 현재 시세 설명을 함께 제시해야 합니다.
 ```
 
 ## 11. 최종 에이전트 연결 모델
@@ -334,9 +334,8 @@ result = analyze_contract(contract_info)
 | 역할 | 모델 |
 |---|---|
 | Primary forecast | 24개월 LightGBM |
-| Supporting forecast | 12개월 ExtraTrees |
 | 현재 위험도 | 현재 계약 전세 평당가 / 현재 시장 매매 평당가 |
-| 면적 보조 지표 | 동 + 주택유형 + 면적구간 기준 최근 12개월 시세 비교 |
+| 면적 참고 지표 | 동 + 주택유형 + 면적구간 기준 최근 12개월 시세 비교 |
 
 ## 12. 모델 에이전트 Input
 
@@ -446,27 +445,12 @@ python .\machine_learning\model_agent.py --json .\machine_learning\docs\model_ag
 | `best_models.csv` | horizon별 최종 best model 요약 |
 | `best_models.json` | horizon별 최종 best model JSON |
 | `growth_24m_best_model.joblib` | 에이전트 primary forecast에 사용되는 24개월 LightGBM 모델 |
-| `growth_12m_best_model.joblib` | 에이전트 supporting forecast에 사용되는 12개월 ExtraTrees 모델 |
+| `growth_12m_best_model.joblib` | 12개월 horizon 비교/평가용 best model 산출물 |
 | `can_jeonse_risk_24m.csv` | 최신 월 기준 24개월 예측 위험도 결과 |
 
 `growth_{horizon}m_model.joblib` 파일은 `growth_{horizon}m_best_model.joblib`와 같은 내용을 복사해 둔 호환용 파일입니다. 현재 모델 에이전트는 명시적으로 `growth_{horizon}m_best_model.joblib`를 사용합니다.
 
-## 16. 현재 남은 한계
-
-현재 모델의 한계는 아래와 같습니다.
-
-```text
-1. 종로구 데이터에 한정되어 다른 구/지역 일반화는 어렵습니다.
-2. 개별 매물의 실제 매매가가 아니라 동/주택유형/월 단위 시장 평균 기반입니다.
-3. 면적은 평당가로 보정하지만, 면적구간 자체가 학습 feature로 들어가지는 않습니다.
-4. 개별 매물의 층수, 방향, 엘리베이터, 관리상태, 권리관계는 직접 반영하지 못합니다.
-5. 반지하/지하층은 모델 적용 대상에서 제외됩니다.
-6. 24개월 모델은 baseline보다 좋지만 과적합 severe 경고가 있습니다.
-```
-
-따라서 실제 서비스 답변에서는 모델 결과를 단독 결론으로 쓰지 말고, 법률 에이전트와 특약 에이전트 결과를 함께 종합해야 합니다.
-
-## 17. Supervisor 연결 시 권장 흐름
+## 16. Supervisor 연결 시 권장 흐름
 
 ```text
 1. 사용자가 계약서 docx 업로드 또는 텍스트 입력
@@ -479,7 +463,7 @@ python .\machine_learning\model_agent.py --json .\machine_learning\docs\model_ag
 5. Supervisor가 최종 답변 생성
 ```
 
-## 18. 최종 결론
+## 17. 최종 결론
 
 현재 머신러닝 파트는 아래 상태입니다.
 
@@ -496,10 +480,22 @@ Supervisor 전달용 Input/Output 문서 작성 완료
 불필요한 frontend 머신러닝 폴더 및 캐시 제거 완료
 ```
 
-최종 서비스/발표 기준으로는 아래처럼 설명하면 됩니다.
 
 ```text
-본 모델은 서울 종로구의 연립다세대/오피스텔 매매 및 전세 실거래 데이터를 바탕으로 동·주택유형·월 단위의 매매 평당가 흐름을 학습했다. 1/3/6/12/24개월 horizon별로 LightGBM, XGBoost, CatBoost, HistGradientBoosting, RandomForest, ExtraTrees, LightGBM+CatBoost+XGBoost 앙상블을 비교했고, 전세계약 기간과 가장 잘 맞는 24개월 LightGBM 모델을 모델 에이전트의 primary forecast로 사용했다. 다만 24개월 모델은 과적합 경고가 있으므로 단독 판단이 아니라 현재 전세가율, 면적구간 최근 12개월 시세, 12개월 보조 모델, 법률/특약 에이전트 결과와 함께 종합 판단하도록 설계했다.
+본 모델은 서울 종로구의 연립다세대/오피스텔 매매 및 전세 실거래 데이터를 바탕으로 동·주택유형·월 단위의 매매 평당가 흐름을 학습했다. 1/3/6/12/24개월 horizon별로 LightGBM, XGBoost, CatBoost, HistGradientBoosting, RandomForest, ExtraTrees, LightGBM+CatBoost+XGBoost 앙상블을 비교했고, 전세계약 기간과 가장 잘 맞는 24개월 LightGBM 모델을 모델 에이전트의 primary forecast로 사용한다. 다만 24개월 모델은 과적합 경고가 있으므로, 최종 가격 위험도는 24개월 LightGBM으로 산정하되 현재 전세가율, 면적구간, 법률/특약 에이전트 결과를 함께 설명하도록 설계했다.
 ```
 
+## 최종 가격 위험도 산정 기준
 
+현재 서비스 연결 기준은 아래처럼 고정합니다.
+
+```text
+최종 가격 예측: 24개월 LightGBM
+최종 가격 위험도: 계약 전세 평당가 / 24개월 LightGBM 예측 매매 평당가
+보조 설명: 현재 시세 위험도, 면적구간 최근 12개월 시세 위험도
+챗봇 전달: price_evidence에 계산 근거를 정리해서 Supervisor에게 반환
+```
+
+따라서 `final_market_risk`와 `price_evidence.risk`는 24개월 LightGBM 예측 위험도와 동일합니다. 현재 시세 위험도와 면적구간 최근 12개월 시세 위험도는 사용자가 결과를 이해하도록 돕는 설명 근거이며 최종 등급을 직접 바꾸지 않습니다.
+
+이렇게 정한 이유는 전세계약의 일반적인 만기 시점이 24개월이므로, 사용자가 실제로 알고 싶은 “계약 만기 시점의 보증금 회수 위험”과 가장 직접적으로 연결되는 모델이 24개월 예측 모델이기 때문입니다. 다만 24개월 LightGBM은 baseline보다 성능이 좋지만 overfit severe 경고가 있으므로, 챗봇 답변에서는 현재 시세와 면적구간 시세를 함께 보여주고 법률/특약 에이전트 결과와 종합해야 합니다.

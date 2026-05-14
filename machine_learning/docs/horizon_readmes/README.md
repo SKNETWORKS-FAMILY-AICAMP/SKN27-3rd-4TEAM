@@ -33,7 +33,7 @@
 - 1개월, 3개월은 best model 기준으로도 baseline보다 MAPE가 낮지 않아 단기 참고 지표로만 보는 것이 좋습니다.
 - 6개월, 12개월, 24개월은 baseline보다 MAPE가 개선되었습니다.
 - 전세계약 기간 2년과 가장 잘 맞는 핵심 horizon은 24개월이며, 현재 best model은 `lightgbm`입니다.
-- 24개월 모델은 개선은 되었지만 overfit severe가 있어 단독 결론이 아니라 현재 전세가율, 12개월 결과, 법률/특약 에이전트 결과와 함께 해석해야 합니다.
+- 24개월 모델은 개선은 되었지만 overfit severe가 있어 현재 전세가율, 면적구간 최근 12개월 시세, 법률/특약 에이전트 결과와 함께 해석해야 합니다.
 
 ## 실행 방법
 
@@ -42,4 +42,3 @@ cd E:\dev\SKN27-3rd-4TEAM
 .\.venv\Scripts\activate
 python .\machine_learning\can_jeonse_forecast.py
 ```
-

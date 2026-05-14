@@ -1,152 +1,130 @@
-﻿# 모델 에이전트 구현 체크리스트
+# 모델 에이전트 최종 구현 가이드
 
-이 문서는 모델 에이전트 담당자가 확인하면서 구현해야 할 내용을 정리한 작업용 문서입니다. 현재 모델은 `동(dong_name) + 주택유형(property_type) + 월(month)` 단위의 시장 흐름을 학습하고, 계약서 또는 사용자 입력으로부터 가격 기반 전세 위험도를 계산합니다.
+## 1. 최종 결정
 
-## 1. 현재 전처리 기준
-
-현재 머신러닝 모델은 지상층 기준 시세 산출을 위해 `floor < 0`인 지하/반지하층 거래를 제외합니다.
+모델 에이전트는 최종적으로 `24개월 LightGBM` 모델 하나만 사용합니다.
 
 ```text
-floor < 0  → 지하/반지하층으로 보고 제외
-floor >= 0 → 학습 및 시세 산출에 사용
-floor 결측 → 데이터 손실 방지를 위해 일단 유지
+최종 가격 예측 = 24개월 LightGBM
+최종 가격 위험도 = 계약 전세 평당가 / 24개월 LightGBM 예측 매매 평당가
 ```
 
-지하/반지하층 제외 후 현재 산출물 기준은 아래와 같습니다.
+12개월 ExtraTrees 참고 예측은 더 이상 모델 에이전트에서 호출하지 않습니다. 현재 시세 위험도와 면적구간 최근 12개월 시세 위험도는 최종 등급을 바꾸지 않고, 챗봇이 사용자를 설득력 있게 설명하기 위한 근거로만 반환합니다.
+
+## 2. 왜 24개월 LightGBM을 최종 모델로 쓰는가
+
+전세계약은 보통 2년이므로 사용자가 알고 싶은 핵심은 계약 만기 시점의 보증금 회수 위험입니다. 따라서 1개월, 3개월, 6개월, 12개월보다 `24개월 뒤 매매가`를 예측하는 모델이 서비스 목적과 가장 직접적으로 연결됩니다.
+
+24개월 horizon 후보 모델 중에서는 LightGBM이 가장 좋은 가격 예측 성능을 보였습니다.
+
+| 모델 | Valid MAPE | Baseline MAPE | Baseline보다 개선 | ROC-AUC | F1 |
+|---|---:|---:|---|---:|---:|
+| LightGBM | 27.03% | 29.63% | 예 | 0.7946 | 0.6218 |
+| Ensemble Mean | 28.46% | 29.63% | 예 | 0.7894 | 0.5607 |
+| CatBoost | 30.00% | 29.63% | 아니오 | 0.7779 | 0.5701 |
+| XGBoost | 30.42% | 29.63% | 아니오 | 0.7763 | 0.5973 |
+
+그래서 최종 에이전트 연결은 앙상블이나 12개월 모델이 아니라 `growth_24m_best_model.joblib`에 저장된 24개월 LightGBM을 사용합니다.
+
+## 3. Purge Gap 적용 여부와 의미
+
+현재 학습/검증 코드에는 horizon별 purge gap이 적용되어 있습니다.
+
+파일 위치:
 
 ```text
-거래 데이터: 21,329건
-지하 층수 거래: 0건
-월별 패널 데이터: 4,604행
+machine_learning/can_jeonse_forecast.py
+build_purged_time_split()
 ```
 
-## 2. 현재 모델의 한계
+purge gap은 train 데이터의 미래 정답월이 valid 구간과 겹치지 않도록 학습 구간 끝을 일부러 앞당기는 방식입니다. 예를 들어 24개월 예측 모델은 `현재 월 + 24개월`의 매매가를 정답으로 사용하므로, valid 시작월 이후의 가격이 train label에 섞이면 데이터 누수가 됩니다.
 
-모델은 가격을 총액이 아니라 평당가로 변환해 사용합니다.
+현재 저장된 best model 기준 검증 결과는 아래와 같습니다.
+
+| Horizon | Best model | Purge gap | Train 종료월 | Valid 시작월 | Label overlap | Leakage safe |
+|---:|---|---:|---|---|---:|---|
+| 1개월 | ExtraTrees | 2개월 | 2023-12 | 2024-02 | 0 | True |
+| 3개월 | ExtraTrees | 4개월 | 2023-09 | 2024-01 | 0 | True |
+| 6개월 | RandomForest | 7개월 | 2023-03 | 2023-10 | 0 | True |
+| 12개월 | ExtraTrees | 13개월 | 2022-04 | 2023-05 | 0 | True |
+| 24개월 | LightGBM | 25개월 | 2020-07 | 2022-08 | 0 | True |
+
+핵심은 아래 두 값입니다.
 
 ```text
-매매가 / 평수 = 매매 평당가
-전세가 / 평수 = 전세 평당가
+train_label_overlap_into_valid_rows = 0
+is_leakage_safe_for_validation = True
 ```
 
-따라서 면적 차이가 완전히 무시된 것은 아니지만, 모델 학습 단위에 면적구간이 직접 들어가 있지는 않습니다.
+따라서 이전에 우려했던 “학습 라벨이 검증 구간의 미래 정답을 포함하는 데이터 누수”는 현재 구조에서 차단되어 있습니다.
 
-```text
-현재 학습 단위: 동 + 주택유형 + 월
-부족한 부분: 동 + 주택유형 + 면적구간 + 월
-```
+단, purge gap은 데이터 누수를 막는 장치이지 과적합 자체를 없애는 장치는 아닙니다. 현재 24개월 LightGBM은 데이터 누수는 차단되었지만 overfit severe 경고가 있으므로, 결과 설명 시 이 한계를 함께 알려야 합니다.
 
-## 3. 최종 수정 방향
+## 4. 모델 에이전트 입력
 
-모델 자체는 지상층 기준 horizon 모델을 유지하고, 모델 에이전트 단계에서 보조 판단을 추가합니다.
-
-```text
-1. 기존 horizon 모델 유지
-2. 지하/반지하층 거래는 학습 데이터에서 제외
-3. 사용자 계약이 지하/반지하층이면 모델 적용 제외 케이스로 반환
-4. 면적구간별 최근 12개월 시세 비교 추가
-5. 낮은 전세가 이상치 탐지 추가
-6. current risk + forecast risk + area_bucket risk를 함께 반환
-```
-
-## 4. 입력 처리
-
-모델 에이전트는 두 가지 입력을 받을 수 있어야 합니다.
-
-```text
-1. docx 계약서 파일
-2. 텍스트로 입력된 계약 정보
-```
-
-최종적으로 아래 형태의 구조화 데이터로 만들어야 합니다.
+Supervisor는 계약서 docx 또는 사용자 텍스트를 먼저 구조화한 뒤, 모델 에이전트에 아래 dict를 전달합니다. 모델 에이전트는 docx 파일 자체를 직접 파싱하지 않습니다.
 
 ```json
 {
+  "contract_id": "contract_001",
+  "source_type": "docx",
   "address": "서울특별시 종로구 신영동 179-21",
   "dong_name": "신영동",
   "property_type": "villa",
   "contract_date": "2025-05-12",
-  "base_month": "2025-05",
   "deposit_amount_manwon": 28600,
   "exclusive_area_m2": 42.39,
-  "exclusive_area_pyeong": 12.82,
   "floor": 3,
   "is_basement": false,
-  "source_type": "docx"
+  "raw_text": "계약서에서 추출한 원문 일부"
 }
 ```
 
-## 5. 필수 입력값
-
-아래 값이 없으면 모델을 돌리지 않고 추가 정보를 요청해야 합니다.
-
-| 필드 | 설명 |
-|---|---|
-| `dong_name` | 동 이름, 예: 신영동 |
-| `property_type` | 주택유형, `villa` 또는 `officetel` |
-| `contract_date` 또는 `base_month` | 계약일 또는 계약월 |
-| `deposit_amount_manwon` | 보증금, 만원 단위 |
-| `exclusive_area_m2` 또는 `exclusive_area_pyeong` | 전용면적 |
-
-## 6. 지하/반지하 계약 처리
-
-계약서 또는 사용자 입력에서 아래 조건이 확인되면 일반 모델 위험도 산출을 하지 않습니다.
+필수값은 아래입니다.
 
 ```text
-floor < 0
-is_basement = true
-raw_text에 반지하, 지하, B1, basement 표현 포함
+dong_name
+property_type
+contract_date 또는 base_month
+deposit_amount_manwon
+exclusive_area_m2 또는 exclusive_area_pyeong
 ```
 
-이 경우 모델 에이전트는 `excluded_case`를 반환하고, 법률 에이전트와 특약 에이전트의 별도 검토를 요청합니다.
+필수값이 부족하면 모델을 억지로 실행하지 않고 `need_more_info`와 `required_input_request`를 반환합니다.
 
-```json
-{
-  "status": "excluded_case",
-  "agent_name": "model_agent",
-  "reason": "basement_or_underground_unit",
-  "message": "반지하 또는 지하층 매물은 현재 지상층 기준 모델의 위험도 산출 대상에서 제외됩니다.",
-  "recommended_next_agents": ["legal_agent", "special_terms_agent"]
-}
-```
-
-## 7. 면적구간 계산
-
-계약서에서 면적을 뽑으면 평수로 변환합니다.
+## 5. 모델 에이전트 처리 흐름
 
 ```text
-전용면적㎡ / 3.3058 = 평수
+1. contract_info 입력 수신
+2. 주소/주택유형/보증금/면적/계약월 정규화
+3. 필수값 부족 여부 확인
+4. 반지하/지하층 여부 확인
+5. 현재 시세 위험도 계산
+6. 면적구간 최근 12개월 시세 위험도 계산
+7. 24개월 LightGBM 예측 실행
+8. 최종 가격 위험도 계산
+9. price_evidence로 Supervisor에 계산 근거 반환
 ```
 
-면적구간은 아래처럼 계산합니다.
+반지하 또는 지하층은 현재 지상층 기준 모델의 적용 대상이 아니므로 `excluded_case`를 반환합니다.
 
-| 면적 | area_bucket |
-|---:|---|
-| 10평 미만 | `10평 미만` |
-| 10평 이상 20평 미만 | `10~20평` |
-| 20평 이상 30평 미만 | `20~30평` |
-| 30평 이상 | `30평 이상` |
+## 6. 위험도 계산 방식
 
-## 8. 면적구간별 최근 12개월 시세 비교
-
-기존 horizon 모델은 유지하되, 모델 에이전트에서 아래 보조 지표를 추가합니다.
+계약 전세 평당가는 아래처럼 계산합니다.
 
 ```text
-동 + 주택유형 + 면적구간 기준 최근 12개월 평균 매매 평당가
-동 + 주택유형 + 면적구간 기준 최근 12개월 평균 전세 평당가
+계약 전세 평당가 = 보증금 / 전용면적 평수
 ```
 
-## 9. 낮은 전세가 이상치 탐지
-
-계약 전세가가 낮다고 무조건 안전하다고 판단하지 않습니다. 아래 조건이면 저가 이상치로 표시합니다.
+최종 가격 위험도는 아래 하나의 공식으로 산정합니다.
 
 ```text
-계약 전세 평당가 < 면적구간 전세 평당가 × 0.85
+최종 가격 위험비율 = 계약 전세 평당가 / 24개월 LightGBM 예측 매매 평당가
 ```
 
-## 10. 위험 등급 기준
+위험비율 등급은 아래 기준을 사용합니다.
 
-| 위험비율 | 등급 |
+| 위험비율 | 위험도 |
 |---:|---|
 | 0.70 미만 | 안전 |
 | 0.70 이상 0.80 미만 | 주의 |
@@ -154,53 +132,90 @@ raw_text에 반지하, 지하, B1, basement 표현 포함
 | 0.90 이상 1.00 미만 | 고위험 |
 | 1.00 이상 | 깡통 가능성 매우 높음 |
 
-## 11. 구현 순서
+`final_market_risk`와 `price_evidence.risk`는 항상 24개월 LightGBM 예측 위험도와 동일합니다.
+
+## 7. 보조 설명으로만 사용하는 값
+
+아래 값들은 최종 위험등급을 바꾸지 않습니다.
+
+| 항목 | 용도 |
+|---|---|
+| 현재 시세 위험도 | 계약 전세가가 현재 시장 매매가 대비 높은지 설명 |
+| 면적구간 최근 12개월 시세 위험도 | 사용자의 전용면적대 기준으로 전세가가 높은지 설명 |
+| 저전세가율/저가 이상치 탐지 | 보증금이 낮아 보이는 계약에서 별도 비용, 권리관계, 하자 가능성 안내 |
+
+12개월 ExtraTrees 예측은 최종 구조에서 제거했습니다.
+
+## 8. 모델 에이전트 성공 Output 핵심 구조
+
+```json
+{
+  "status": "success",
+  "agent_name": "model_agent",
+  "risk_type": "market_price_risk",
+  "current_market_check": {},
+  "area_bucket_check": {},
+  "price_position_check": {},
+  "low_jeonse_ratio_check": {},
+  "forecast_check": {
+    "primary": {
+      "horizon_months": 24,
+      "model_name": "lightgbm",
+      "forecast_sale_per_pyeong": 2347.0,
+      "forecast_risk_ratio": 0.95,
+      "forecast_risk_level": "고위험"
+    }
+  },
+  "price_evidence": {
+    "final_prediction_model": "24m_lightgbm",
+    "final_risk_basis": "contract_jeonse_per_pyeong / forecast_sale_per_pyeong_24m",
+    "sale_price": 2347.0,
+    "sale_price_type": "24개월 LightGBM 예측 매매 평당가",
+    "jeonse_price": 2230.0,
+    "jeonse_price_type": "계약 전세 평당가",
+    "jeonse_ratio": 0.95,
+    "risk": "고위험",
+    "calculation_basis": "계약 전세 평당가를 24개월 LightGBM 예측 매매 평당가로 나눈 값입니다.",
+    "supporting_evidence": {
+      "current_market": {},
+      "area_bucket_recent_12m": {}
+    }
+  },
+  "model_quality": {
+    "leakage_safe": true,
+    "overfit_warning": true,
+    "overfit_severe": true
+  },
+  "final_market_risk": "고위험"
+}
+```
+
+Supervisor는 `price_evidence`를 가격 판단 근거로 사용하면 됩니다.
+
+## 9. Supervisor에게 전달할 요약
 
 ```text
-1. model_agent.py 생성
-2. docx 계약서 파싱 함수 작성
-3. 텍스트 입력 파싱 함수 작성
-4. 필수값 검증 함수 작성
-5. 지하/반지하 제외 케이스 판별 함수 작성
-6. 면적구간 계산 함수 작성
-7. 면적구간별 최근 12개월 시세 계산 함수 작성
-8. 낮은 전세가 이상치 탐지 함수 작성
-9. current risk + forecast risk + area_bucket risk output 작성
-10. 샘플 계약서로 테스트
+모델 에이전트는 계약서 또는 사용자 입력에서 추출된 동, 주택유형, 계약일, 보증금, 전용면적, 층수 정보를 받아 가격 기반 전세 위험도를 계산합니다. 최종 예측 모델은 24개월 LightGBM 하나이며, 최종 가격 위험도는 계약 전세 평당가를 24개월 예측 매매 평당가로 나누어 산정합니다. 현재 시세 위험도와 면적구간 최근 12개월 시세 위험도는 최종 등급을 바꾸지 않고 설명 근거로만 사용합니다. 반지하/지하층은 모델 적용 대상에서 제외하고, 필수값이 부족하면 사용자에게 추가 정보를 요청합니다. 모델 검증에는 horizon별 purge gap을 적용해 train label과 valid 구간의 미래 정답이 겹치는 데이터 누수를 차단했습니다.
 ```
 
-## 12. 현재 구현된 연결 파일
+## 10. 실행 방법
 
-현재 Supervisor 연결용 모델 에이전트는 아래 파일에 구현되어 있습니다.
-
-```text
-machine_learning/model_agent.py
-```
-
-Supervisor 또는 다른 Python 코드에서는 아래처럼 호출하면 됩니다.
-
-```python
-from machine_learning.model_agent import analyze_contract
-
-result = analyze_contract({
-    "contract_id": "contract_001",
-    "dong_name": "신영동",
-    "property_type": "villa",
-    "contract_date": "2025-05-12",
-    "deposit_amount_manwon": 28600,
-    "exclusive_area_m2": 42.39,
-    "floor": 3,
-    "is_basement": False,
-})
-```
-
-터미널에서 단독 테스트할 때는 아래 명령을 사용합니다.
+모델 에이전트 단독 테스트:
 
 ```powershell
 cd E:\dev\SKN27-3rd-4TEAM
-.\.venv\Scripts\activate
+.\.venv\Scriptsctivate
 python .\machine_learning\model_agent.py --demo
-python .\machine_learning\model_agent.py --json .\machine_learning\docs\model_agent_sample_input.json
 ```
 
-현재 구현은 24개월 LightGBM 모델을 primary forecast로 사용하고, 12개월 ExtraTrees 모델을 supporting forecast로 함께 반환합니다. 현재 시장 위험도, 면적구간 최근 12개월 비교, 예측 위험도를 함께 계산합니다.
+전체 모델 재학습/평가:
+
+```powershell
+python .\machine_learning\can_jeonse_forecast.py
+```
+
+24개월 모델만 재학습/평가:
+
+```powershell
+python .\machine_learning\can_jeonse_forecast_24m.py
+```
