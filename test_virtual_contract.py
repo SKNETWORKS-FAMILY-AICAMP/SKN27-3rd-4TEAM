@@ -123,23 +123,7 @@ def extract_fields(text: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_dl(fields: dict[str, Any]) -> tuple[dict, list[dict]]:
-    try:
-        from common.tools.dl_market_bridge import run_dl_analysis
-        pack, findings = run_dl_analysis(fields)
-        pack_dict = {
-            "task_type": pack.task_type,
-            "quality_score": pack.quality.score,
-            "quality_sufficient": pack.quality.sufficient,
-            "quality_reason": pack.quality.reason,
-            "contexts": [
-                {"title": c.title, "score": c.score, "text_preview": c.text[:200]}
-                for c in pack.contexts
-            ],
-        }
-        findings_list = [asdict(f) for f in findings]
-        return pack_dict, findings_list
-    except Exception as e:
-        return {"error": str(e), "quality_sufficient": False}, []
+    return {"error": "DL market bridge was removed with the legacy shared package", "quality_sufficient": False}, []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
