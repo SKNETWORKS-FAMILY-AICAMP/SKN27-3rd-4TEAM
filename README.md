@@ -124,7 +124,7 @@ flowchart LR
 
 각 월별 매매 평당가, 전세 평당가, 거래 수, 평균 층수, 평균 건물연식, 전세가율, 과거 lag/rolling 변수 생성
 
-## 각 horizon별로 아래 모델을 비교
+### 각 horizon별 아래 모델 비교
 
 | 모델 | 설명 |
 |---|---|
@@ -226,6 +226,7 @@ flowchart TD
 
 ## 10. 프로젝트 구조
 
+```
 SKN27-3rd-4TEAM/
 ├── data/                      종로구 실거래 CSV (40개)
 ├── database/schema.sql        PostgreSQL DDL
@@ -249,7 +250,7 @@ SKN27-3rd-4TEAM/
 │   └── ragas_test*.py         RAG 평가
 ├── docker-compose.yml
 └── requirements.txt
-
+```
 ---
 
 ## 11. 실행 방법
