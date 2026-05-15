@@ -77,7 +77,12 @@ def _load_reports() -> list[dict]:
             "date": date_short,
             "tags": tags,
             "ratio": f"{ui.get('jeonse_ratio', 0):.0f}%" if ui.get("jeonse_ratio") else "미상",
-            "hug": "가입 어려움" if ui.get("jeonse_ratio", 0) >= 90 else ("확인 필요" if ui.get("jeonse_ratio", 0) >= 80 else "가능성 있음"),
+            "hug": (
+                "데이터 없음" if ui.get("jeonse_ratio") is None
+                else "가입 어려움" if ui["jeonse_ratio"] >= 90
+                else "확인 필요" if ui["jeonse_ratio"] >= 80
+                else "가능성 있음"
+            ),
             "filepath": filepath,
             "report_data": data,
         })
