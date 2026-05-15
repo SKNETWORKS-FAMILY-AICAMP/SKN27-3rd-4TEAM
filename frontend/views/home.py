@@ -292,7 +292,6 @@ def render():
                 판례 85건을 근거로 위험을 진단해 드립니다.
               </div>
               <a class="home-primary-cta" href="?view=chat" target="_self">자료 올리고 진단 시작 →</a>
-              <a class="home-secondary-cta" href="?view=simulator" target="_self">시뮬레이터 먼저 보기</a>
               <div class="home-trust">
                 <span>✓ 무료</span>
                 <span>✓ 1분 진단</span>
