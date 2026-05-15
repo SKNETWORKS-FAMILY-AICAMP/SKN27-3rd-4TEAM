@@ -285,11 +285,11 @@ def render():
         <div class="home-shell">
           <div class="home-visual">
             <div class="home-inner">
-              <div class="home-badge"><span></span> 서울 종로구 · 전세사기 진단 서비스</div>
+              <div class="home-badge"><span>♡</span> 서울 종로구 · 전세사기 진단 서비스</div>
               <div class="home-title">계약하기 전에<br />먼저 안전한지 확인하세요</div>
               <div class="home-desc">
-                등기부등본과 계약서를 올리면, AI가 종로구 실거래가 1,160건과
-                판례 157건을 근거로 위험을 진단해 드립니다.
+                계약서를 올리면, AI가 종로구 실거래가와
+                판례 85건을 근거로 위험을 진단해 드립니다.
               </div>
               <a class="home-primary-cta" href="?view=chat" target="_self">자료 올리고 진단 시작 →</a>
               <div class="home-trust">
@@ -307,12 +307,12 @@ def render():
                 <div class="home-step-card">
                   <div class="home-num">1</div>
                   <div class="home-card-title">자료 업로드</div>
-                  <div class="home-card-copy">등기부등본·임대차계약서 docx 파일을 업로드하거나 주소만 입력해도 됩니다.</div>
+                  <div class="home-card-copy">계약서 DOCX를 올리거나, 주소와 전세금만 입력해도 됩니다.</div>
                 </div>
                 <div class="home-step-card">
                   <div class="home-num">2</div>
                   <div class="home-card-title">AI 자동 분석</div>
-                  <div class="home-card-copy">전세가율·근저당·신탁등기 등 15가지 위험 항목을 자동 점검.</div>
+                  <div class="home-card-copy">전세가율·특약 조항 등 위험 항목을 자동 점검합니다.</div>
                 </div>
                 <div class="home-step-card">
                   <div class="home-num">3</div>
@@ -329,8 +329,14 @@ def render():
                 <a class="home-action-card" href="?view=chat" target="_self">
                   <div class="home-icon">🧠</div>
                   <div class="home-card-title">지금 매물 진단하기</div>
-                  <div class="home-card-copy">등기부·계약서를 올리고 위험도 분석</div>
+                  <div class="home-card-copy">계약서를 올리고 위험도 분석</div>
                   <div class="home-action">시작 →</div>
+                </a>
+                <a class="home-action-card" href="?view=simulator" target="_self">
+                  <div class="home-icon">📊</div>
+                  <div class="home-card-title">깡통전세 시뮬레이터</div>
+                  <div class="home-card-copy">경매 시 보증금 회수율 계산</div>
+                  <div class="home-action">계산 →</div>
                 </a>
                 <a class="home-action-card" href="?view=cases" target="_self">
                   <div class="home-icon">⚖️</div>
@@ -345,7 +351,7 @@ def render():
                   <div class="home-action">체크 →</div>
                 </a>
                 <a class="home-action-card" href="?view=playbook" target="_self">
-                  <div class="home-icon red">🛡️</div>
+                  <div class="home-icon red">🆘</div>
                   <div class="home-card-title">이미 피해를 입었다면</div>
                   <div class="home-card-copy">신고 창구 · 진행 순서 안내</div>
                   <div class="home-action red">바로가기 →</div>
@@ -355,12 +361,6 @@ def render():
                   <div class="home-card-title">내 진단 기록</div>
                   <div class="home-card-copy">이전에 검토한 매물 비교</div>
                   <div class="home-action">보기 →</div>
-                </a>
-                <a class="home-action-card" href="?view=market" target="_self">
-                  <div class="home-icon">📊</div>
-                  <div class="home-card-title">지역 시세 확인하기</div>
-                  <div class="home-card-copy">전세가율 · 경매가 비교</div>
-                  <div class="home-action">확인 →</div>
                 </a>
               </div>
 
@@ -372,13 +372,14 @@ def render():
               </div>
 
               <div class="home-notice">
-
+                ▲ 본 서비스는 법률 자문이 아닌 데이터 기반 사전 점검 도구입니다.
+                실제 계약 전 변호사·공인중개사 상담을 권장합니다.
               </div>
             </div>
           </div>
 
           <div class="home-footer">
-          업로드 자료는 분석 후 즉시 폐기됩니다 · 본 분석은 참고용이며 최종 계약 전 공인중개사·법률 전문가 상담을 권장합니다.
+            🔒 업로드한 계약서는 분석 후 즉시 폐기됩니다 · 본 분석은 참고용이며 최종 계약 전 공인중개사·법률 전문가 상담을 권장합니다 · v1.0
           </div>
         </div>
         """

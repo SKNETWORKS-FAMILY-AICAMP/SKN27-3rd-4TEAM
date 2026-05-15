@@ -1,33 +1,37 @@
-"""최근 확인 매물 상세 화면."""
+"""매물 상세 화면 — 진단 기록에서 선택한 매물의 상세 정보."""
 
 import streamlit as st
 
-from utils.components import render_status_pill, risk_row, case_row, section_divider
-from views.history import LEVEL_KO, RECORDS
-
-
-DETAILS = {
-    1: {"building": "한빛빌라 302호", "sale": "₩2.75억", "risks": [("전세가율 91%", "치명", "danger", "HUG 전세보증보험 약관 제10조 · 90% 초과 시 가입 거절"), ("선순위 근저당 ₩2.1억 미말소", "치명", "danger", "대법원 2022다48327 · 선순위 우선 변제"), ("신탁등기 의심", "주의", "caution", "신탁법 제22조 · 수탁자 동의 없이 임대 불가")]},
-    2: {"building": "익선동 ○○빌라 201호", "sale": "₩2.2억", "risks": [("다가구 선순위 임차인 확인 필요", "주의", "caution", "주택임대차보호법 · 우선변제권 확인"), ("전세가율 82%", "주의", "caution", "보증보험 심사 기준 확인 필요")]},
-    3: {"building": "혜화동 ○○ 빌라 5층", "sale": "₩3.5억", "risks": [("전세가율 63%", "안전", "safe", "시세 대비 보증금이 낮은 편"), ("HUG 가입 가능", "안전", "safe", "보증보험 가입 가능성 높음")]},
-    4: {"building": "창신동 ○○ 오피스텔 1102호", "sale": "₩1.67억", "risks": [("신탁등기 확인 필요", "치명", "danger", "신탁원부와 수탁자 동의서 확인 필요"), ("전세가율 96%", "치명", "danger", "깡통전세 위험 구간")]},
-    5: {"building": "명륜1가 ○○빌라 401호", "sale": "₩2.7억", "risks": [("근저당 소액 존재", "주의", "caution", "말소 조건 특약 권장"), ("전세가율 74%", "주의", "caution", "추가 권리관계 확인 필요")]},
-    6: {"building": "누상동 ○○ 빌라 302호", "sale": "₩3.3억", "risks": [("전세가율 58%", "안전", "safe", "시세 대비 안정 구간"), ("선순위 권리 없음", "안전", "safe", "최근 등기부 기준 위험 권리 없음")]},
-}
+from utils.components import render_status_pill, risk_row, section_divider
+from views.history import LEVEL_KO, _load_reports, _risk_to_level
 
 
 def _selected_record():
     rec_id = st.session_state.get("selected_record_id", 1)
-    return next((r for r in RECORDS if r["id"] == rec_id), RECORDS[0])
+    records = _load_reports()
+    for r in records:
+        if r["id"] == rec_id:
+            return r
+    return records[0] if records else None
 
 
 def render():
     rec = _selected_record()
-    detail = DETAILS.get(rec["id"], DETAILS[1])
-    status_type = {"danger": "danger", "caution": "caution", "safe": "safe"}[rec["level"]]
+    if not rec:
+        st.warning("선택된 매물 정보가 없습니다.")
+        if st.button("← 진단 기록으로"):
+            st.session_state.current_view = "history"
+            st.rerun()
+        return
+
+    report = rec.get("report_data", {})
+    ui = report.get("user_info", {})
+    level = rec["level"]
+    level_ko = LEVEL_KO.get(level, "미상")
 
     st.markdown(
-        f'<div style="font-size:12px;font-weight:700;color:var(--gray-500);letter-spacing:.04em;margin-bottom:6px">최근 확인 매물 · 분석 #{rec["id"]:03d}</div>',
+        f'<div style="font-size:12px;font-weight:700;color:var(--gray-500);'
+        f'letter-spacing:.04em;margin-bottom:6px">진단 상세 · {rec["session_id"]}</div>',
         unsafe_allow_html=True,
     )
 
@@ -35,25 +39,13 @@ def render():
     with title_col:
         st.markdown(f"# {rec['addr']}")
         st.markdown(
-            '<p style="color:var(--gray-500);font-size:14px;margin-top:-8px">전세 계약 전 확인해야 할 핵심 정보와 위험 신호를 한 화면에서 확인하세요.</p>',
+            f'<p style="color:var(--gray-500);font-size:14px;margin-top:-8px">'
+            f'{rec["date"]} 진단 · {rec["deposit"]}{" · " + rec["area"] if rec["area"] else ""}</p>',
             unsafe_allow_html=True,
         )
     with status_col:
         st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
-        render_status_pill(status_type, rec["score"], f"{LEVEL_KO[rec['level']]} 매물")
-
-    section_divider()
-
-    # ───── 분석 완료 배너 (AI 안심 상담에서 업로드된 자료 기반) ─────
-    st.markdown(
-        f"""
-        <div style="background:var(--green-soft);border:1px solid #b8ead9;border-radius:12px;
-                    padding:12px 14px;margin-top:4px;font-size:13px;color:#005a3f">
-          ✓ 분석 완료 · <b>{len(detail['risks'])}건 위험 신호</b> 탐지됨 — 아래 진단 결과를 확인하세요
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        render_status_pill(level, rec["score"], f"{level_ko} 매물")
 
     section_divider()
 
@@ -61,109 +53,78 @@ def render():
 
     with info_col:
         st.markdown("### 매물 정보")
+        pred_deposit = ui.get("predicted_deposit_2027", "미상")
+        pred_sale = ui.get("predicted_sale_2027", "미상")
+        ratio = ui.get("jeonse_ratio", "미상")
         st.markdown(
             f"""
             <div class="tw-card">
               <div class="prop-detail-grid">
-                <span>주소</span><b>{rec['addr']}</b>
-                <span>건물명</span><b>{detail['building']}</b>
-                <span>보증금</span><b>{rec['deposit']}</b>
-                <span>면적</span><b>{rec['area']}</b>
-                <span>준공</span><b>{rec['year']}</b>
-                <span>예상 매매가</span><b>{detail['sale']}</b>
-                <span>전세가율</span><b>{rec['ratio']}</b>
-                <span>보증보험</span><b>{rec['hug']}</b>
+                <span>주소</span><b>{ui.get('address', '미상')}</b>
+                <span>전세금</span><b>{ui.get('deposit', 0):,}만원</b>
+                <span>전용면적</span><b>{ui.get('area_m2', '미상')}㎡</b>
+                <span>계약기간</span><b>{ui.get('contract_period', '미상')}</b>
+                <span>전세가율</span><b>{ratio}{'%' if isinstance(ratio, (int, float)) else ''}</b>
+                <span>예측 전세금(2027)</span><b>{pred_deposit if pred_deposit == '미상' else f'{pred_deposit:,}만원'}</b>
+                <span>예측 매매가(2027)</span><b>{pred_sale if pred_sale == '미상' else f'{pred_sale:,}만원'}</b>
+                <span>위험 점수</span><b>{ui.get('risk_score', 0)}/100</b>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
-        st.markdown("### 계약 진행 상태")
-        st.markdown(
-            """
-            <div class="tw-card">
-              <div class="timeline-row done"><span></span><div><b>자료 분석 완료</b><small>등기부등본 · 계약서 초안 · 시세 데이터 확인</small></div></div>
-              <div class="timeline-row now"><span></span><div><b>위험 검토 필요</b><small>아래 위험 항목 해소 후 계약 진행 권장</small></div></div>
-              <div class="timeline-row"><span></span><div><b>체크리스트 확인</b><small>계약 전 필수 항목을 완료하세요</small></div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        # 가격 진단
+        price_diag = report.get("price_diagnosis", "")
+        if price_diag:
+            st.markdown("### 가격 진단")
+            st.markdown(
+                f'<div class="tw-card"><p style="font-size:13px;line-height:1.7;color:var(--gray-700)">'
+                f'{price_diag}</p></div>',
+                unsafe_allow_html=True,
+            )
 
     with risk_col:
-        st.markdown("### 핵심 위험 신호")
-        for title, meta, tone, law in detail["risks"]:
-            risk_row(title, meta, tone, law=law)
+        st.markdown("### 위험 분석")
 
-        st.markdown(
-            """
-            <div class="tw-card" style="margin-top:12px">
-              <div style="font-size:11px;font-weight:800;color:var(--gray-500);letter-spacing:.06em;margin-bottom:10px">권장 조치</div>
-              <div class="action-row"><b>1</b><span>등기부등본을 계약 직전 다시 발급해 권리 변동을 확인</span></div>
-              <div class="action-row"><b>2</b><span>반환보증 가입 가능 여부를 먼저 조회</span></div>
-              <div class="action-row"><b>3</b><span>위험 권리는 말소 조건 특약으로 계약서에 명시</span></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        # 가격 위험
+        if ui.get("jeonse_ratio"):
+            r = ui["jeonse_ratio"]
+            if r >= 90:
+                risk_row(f"전세가율 {r:.0f}%", "치명", "danger")
+            elif r >= 80:
+                risk_row(f"전세가율 {r:.0f}%", "주의", "caution")
+            else:
+                risk_row(f"전세가율 {r:.0f}%", "안전", "safe")
 
-    section_divider()
+        if ui.get("deposit_vs_avg") and ui["deposit_vs_avg"] > 110:
+            v = ui["deposit_vs_avg"]
+            risk_row(f"지역 평균 대비 {v:.0f}%", "주의" if v < 120 else "치명", "caution" if v < 120 else "danger")
 
-    # ───── 나와 비슷한 사례 ─────
-    st.markdown("### 🎯 나와 비슷한 사례 — 종로구 자동 매칭")
-    st.markdown(
-        '<p style="color:var(--gray-500);font-size:13px;margin-top:-8px">'
-        "다세대 · 전세가율 90%+ · 근저당 있음 조건의 실제 피해/구제 사례입니다.</p>",
-        unsafe_allow_html=True,
-    )
+        # 특약 위험
+        terms = report.get("special_terms", [])
+        if terms:
+            st.markdown("#### 특약 분석")
+            for t in terms:
+                t_level = _risk_to_level(t.get("risk_level", "미상"))
+                text = t.get("term_text", "")[:50]
+                risk_row(text, t.get("risk_level", "미상"), t_level)
+                if t.get("diagnosis"):
+                    st.markdown(
+                        f'<div style="padding-left:40px;margin-bottom:8px;font-size:12px;color:var(--gray-500)">'
+                        f'{t["diagnosis"][:100]}</div>',
+                        unsafe_allow_html=True,
+                    )
 
-    case_row(
-        "'23",
-        "종로",
-        "<b>명륜동 다세대 · 근저당 2.4억</b><br/>"
-        '<span style="color:var(--gray-500);font-size:12px">'
-        "경매 낙찰 1.92억 · 임차인 회수 실패 · HUG 보장 미가입</span>",
-        "회수 0%",
-        "bad",
-    )
-    case_row(
-        "'24",
-        "종로",
-        "<b>혜화동 빌라 · HUG 가입 상태</b><br/>"
-        '<span style="color:var(--gray-500);font-size:12px">'
-        "임대인 파산 · HUG가 보증금 전액 대위변제 · 평균 소요 4.2개월</span>",
-        "회수 100%",
-        "good",
-    )
-    case_row(
-        "'24",
-        "종로",
-        "<b>익선동 오피스텔 · 임차권등기</b><br/>"
-        '<span style="color:var(--gray-500);font-size:12px">'
-        "동일 패턴 · 임차권등기 + 단독 경매 신청으로 68% 회수 (14개월)</span>",
-        "회수 68%",
-        "partial",
-    )
-
-    st.markdown(
-        """
-        <div style="background:var(--gray-100);border-radius:14px;padding:16px;margin-top:8px">
-          <div style="font-size:11px;font-weight:800;color:var(--gray-500);letter-spacing:.06em;margin-bottom:10px">
-            동일 조건 47건 판례 평균
-          </div>
-          <div class="stat-row"><span>평균 회수율</span><b>43%</b></div>
-          <div class="stat-row"><span>평균 소요 기간</span><b>13.8개월</b></div>
-          <div class="stat-row"><span>HUG 가입 시 회수율</span><b style="color:var(--green)">100%<span class="delta">+57%p</span></b></div>
-          <div class="stat-row"><span>임차권등기 시 회수율</span><b style="color:var(--green)">81%<span class="delta">+38%p</span></b></div>
-          <div style="font-size:11px;color:var(--gray-500);margin-top:8px">
-            근거: 대법원 판결문 + HUG 대위변제 공개 데이터 (2022–2025)
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        # 최종 리포트
+        final = report.get("final_report", "")
+        if final:
+            st.markdown("#### 종합 소견")
+            st.markdown(
+                f'<div class="tw-card" style="border-left:3px solid var(--blue);margin-top:8px">'
+                f'<p style="font-size:13px;line-height:1.7;color:var(--gray-700)">{final}</p></div>',
+                unsafe_allow_html=True,
+            )
 
     section_divider()
 
@@ -173,38 +134,12 @@ def render():
             st.session_state.current_view = "history"
             st.rerun()
     with c2:
-        if st.button("💬 챗봇에서 질문", use_container_width=True, type="primary"):
-            # 매물 컨텍스트 설정 (문서 컨텍스트는 해제 — 상호 배타)
-            st.session_state.chat_context_property = {
-                "id": rec["id"],
-                "addr": rec["addr"],
-                "deposit": rec["deposit"],
-                "area": rec["area"],
-                "year": rec["year"],
-                "score": rec["score"],
-                "level": rec["level"],
-                "ratio": rec["ratio"],
-                "senior": rec["senior"],
-                "hug": rec["hug"],
-                "tags": rec["tags"],
-                "risks": [list(r) for r in detail["risks"]],
-                "building": detail["building"],
-                "sale": detail["sale"],
-            }
-            st.session_state.pop("chat_context_doc", None)
-            # 매물 기반 인삿말로 메시지 초기화
-            risk_titles = " · ".join(r[0] for r in detail["risks"][:3])
-            st.session_state.messages = [{
-                "role": "assistant",
-                "content": (
-                    f"🏠 <b>{rec['addr']}</b> 매물에 대한 상담을 시작합니다.<br/><br/>"
-                    f"진단 결과: <b>위험도 {rec['score']}점 ({LEVEL_KO[rec['level']]})</b> · "
-                    f"전세가율 <b>{rec['ratio']}</b> · 보증보험 <b>{rec['hug']}</b><br/><br/>"
-                    f"주요 위험 신호: {risk_titles}<br/><br/>"
-                    "이 매물에 대해 무엇을 알고 싶으신가요?"
-                ),
-                "sources": [f"📋 매물 진단 #{rec['id']:03d}", f"⚠️ 위험 신호 {len(detail['risks'])}건"],
-            }]
+        if st.button("💬 이 매물로 상담", use_container_width=True, type="primary"):
+            st.session_state.session_id = rec["session_id"]
+            if "chat_session" in st.session_state:
+                del st.session_state.chat_session
+            st.session_state.diagnosis_done = True
+            st.session_state.report = report
             st.session_state.current_view = "chat"
             st.rerun()
     with c3:

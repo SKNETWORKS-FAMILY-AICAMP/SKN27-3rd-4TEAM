@@ -15,7 +15,7 @@ BASE_DOCUMENTS = [
 
 
 def _load_pdf_documents():
-    root = Path(r"E:\dev\SKN27-3rd-4TEAM\docs\pdf")
+    root = Path(__file__).resolve().parent.parent.parent / "docs" / "pdf"
     if not root.exists():
         return []
     docs = []

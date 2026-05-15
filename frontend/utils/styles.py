@@ -9,15 +9,6 @@ GLOBAL_CSS = """
     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
   }
 
-  /* Material Symbols 아이콘은 Streamlit 기본 폰트 유지 (Pretendard 전역 override 예외 처리) */
-  span[translate="no"],
-  span[data-testid*="stIconMaterial"],
-  [data-testid="stFileUploaderDropzone"] span[aria-hidden="true"],
-  .material-symbols-rounded,
-  .material-symbols-outlined {
-    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
-  }
-
   /* ── Global tokens ─────────────────────────────────── */
   :root {
     --blue: #3182f6;
@@ -43,6 +34,10 @@ GLOBAL_CSS = """
 
   /* Hide default Streamlit chrome */
   #MainMenu, footer { visibility: hidden; }
+  button[kind="headerNoPadding"] span[data-testid="stIconMaterial"] { font-size:0; }
+  button[kind="headerNoPadding"] span[data-testid="stIconMaterial"]::before {
+    content: "☰"; font-size: 20px;
+  }
   header[data-testid="stHeader"] {
     visibility: visible;
     background: transparent;
@@ -74,14 +69,6 @@ GLOBAL_CSS = """
     color: #fff;
     border-color: rgba(49,130,246,.28);
   }
-  .side-brand-link {
-    display: block;
-    text-decoration: none !important;
-    color: inherit !important;
-    border-radius: 12px;
-    transition: background .15s ease;
-  }
-  .side-brand-link:hover { background: rgba(49,130,246,.10); }
   .side-brand { padding: 8px 4px 28px; }
   .side-logo {
     width: 38px; height: 38px; border-radius: 12px;
@@ -157,15 +144,17 @@ GLOBAL_CSS = """
     color: var(--gray-500) !important;
     font-size: 11px !important;
   }
-  /* ? 도움말 버튼 — stWidgetLabel 안에만 적용 (업로드 버튼은 제외) */
-  div[data-testid="stFileUploader"] [data-testid="stWidgetLabel"] button {
+  /* ? 도움말 버튼은 원래 스타일 유지 */
+  div[data-testid="stFileUploader"] button[title],
+  div[data-testid="stFileUploader"] button[aria-label] {
     all: unset !important;
     cursor: pointer !important;
     color: var(--gray-500) !important;
     font-size: 13px !important;
     font-weight: 700 !important;
   }
-  div[data-testid="stFileUploader"] [data-testid="stWidgetLabel"] button::after {
+  div[data-testid="stFileUploader"] button[title]::after,
+  div[data-testid="stFileUploader"] button[aria-label]::after {
     content: none !important;
   }
   /* Cards / wrappers */
@@ -363,8 +352,8 @@ GLOBAL_CSS = """
     border-color: var(--blue) !important;
     box-shadow: 0 0 0 3px rgba(49,130,246,.12), 0 8px 18px rgba(15,23,42,.06) !important;
   }
-  /* 별 버튼 — 테두리/배경 없는 빨간 아이콘 (진단 기록 카드에만 적용: .dot 포함 컨테이너 한정) */
-  div[data-testid="stVerticalBlockBorderWrapper"]:has(.dot) button {
+  /* 별 버튼 — 테두리/배경 없는 빨간 아이콘 */
+  div[data-testid="stVerticalBlockBorderWrapper"] button {
     all: unset !important;
     cursor: pointer !important;
     color: var(--red) !important;
@@ -379,7 +368,7 @@ GLOBAL_CSS = """
     transition: background 0.1s !important;
     line-height: 1 !important;
   }
-  div[data-testid="stVerticalBlockBorderWrapper"]:has(.dot) button:hover {
+  div[data-testid="stVerticalBlockBorderWrapper"] button:hover {
     background: var(--red-soft) !important;
     border-radius: 6px !important;
   }
@@ -568,82 +557,6 @@ GLOBAL_CSS = """
   }
   div[data-testid="stCheckbox"] p {
     display: none;
-  }
-
-  /* Playbook card — 원본 HTML 카드 + 투명 버튼 overlay
-     컬럼 단위로만 스코프하고 (전체 페이지 적용 방지),
-     컬럼 내부의 첫 직계 vertical-block 만 grid stack 으로 전환 */
-  div[data-testid="stColumn"]:has(.pb-stack-marker) > div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"],
-  div[data-testid="stColumn"]:has(.pb-stack-marker) > div[data-testid="stVerticalBlock"] {
-    display: grid !important;
-    grid-template-columns: 1fr !important;
-    grid-template-rows: auto !important;
-    gap: 0 !important;
-  }
-  /* 모든 직계 자식 (card + button element-container) 을 같은 셀에 겹침 */
-  div[data-testid="stColumn"]:has(.pb-stack-marker) > div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"] > div,
-  div[data-testid="stColumn"]:has(.pb-stack-marker) > div[data-testid="stVerticalBlock"] > div {
-    grid-column: 1 / 2;
-    grid-row: 1 / 2;
-    width: 100% !important;
-  }
-  /* 첫 자식 (마커) 숨김 — grid 영향 X */
-  div[data-testid="stColumn"]:has(.pb-stack-marker) > div[data-testid="stVerticalBlockBorderWrapper"] > div[data-testid="stVerticalBlock"] > div:has(.pb-stack-marker),
-  div[data-testid="stColumn"]:has(.pb-stack-marker) > div[data-testid="stVerticalBlock"] > div:has(.pb-stack-marker) {
-    display: none !important;
-  }
-  /* 투명 클릭 버튼 — 카드 위에 정확히 겹쳐 클릭 캡처 */
-  div[data-testid="stColumn"]:has(.pb-stack-marker) div.stButton {
-    height: 100% !important;
-    margin: 0 !important;
-  }
-  div[data-testid="stColumn"]:has(.pb-stack-marker) div.stButton > button {
-    width: 100% !important;
-    height: 100% !important;
-    min-height: 100% !important;
-    opacity: 0 !important;
-    cursor: pointer !important;
-    background: transparent !important;
-    border: none !important;
-    padding: 0 !important;
-    box-shadow: none !important;
-  }
-  /* 카드 호버/선택 강조 — 컬럼 레벨 hover */
-  div[data-testid="stColumn"]:has(.pb-stack-marker) .pb-card {
-    cursor: pointer;
-    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
-    height: 100%;
-    margin-bottom: 0 !important;
-  }
-  div[data-testid="stColumn"]:has(.pb-stack-marker):hover .pb-card {
-    border-color: var(--blue) !important;
-    box-shadow: 0 6px 18px rgba(49,130,246,.12) !important;
-    transform: translateY(-2px);
-  }
-  .pb-card.is-selected {
-    border-color: var(--blue) !important;
-    box-shadow: 0 0 0 3px rgba(49,130,246,.18), 0 8px 18px rgba(15,23,42,.06) !important;
-    background: #f6fbff !important;
-  }
-
-  /* Lawyer kit — 시각 참고용 텍스트 카드 (체크박스 없음) */
-  .kit-row {
-    background: #fff;
-    border: 1px solid var(--gray-200);
-    border-radius: 12px;
-    padding: 14px 16px;
-    margin-bottom: 10px;
-  }
-  .kit-row .kit-title {
-    font-size: 14px;
-    font-weight: 800;
-    color: var(--gray-900);
-    margin-bottom: 4px;
-  }
-  .kit-row .kit-desc {
-    font-size: 12px;
-    color: var(--gray-500);
-    line-height: 1.5;
   }
   /* Section divider */
   .sec-divider { height: 1px; background: var(--gray-200); margin: 24px 0; }

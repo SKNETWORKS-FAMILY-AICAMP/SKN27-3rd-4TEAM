@@ -1,68 +1,34 @@
-services:
+name: jeonse-risk
 
-  # =============================================
-  # PostgreSQL DB 컨테이너
-  # =============================================
+services:
+  # PostgreSQL + pgvector
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: jeonse_db
     restart: unless-stopped
     environment:
       POSTGRES_DB: jeonse_risk
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-jeonse1234}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d jeonse_risk"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  # =============================================
-  # 파이프라인 컨테이너 (최초 CSV 적재, 한 번만 실행)
-  # =============================================
-  pipeline:
-    build: .
-    container_name: jeonse_pipeline
-    restart: "no"
-    env_file:
-      - .env
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: jeonse_risk
-      DB_USER: postgres
-    depends_on:
-      db:
-        condition: service_healthy
-    command: ["python", "rag/scripts/preprocess_load.py"]
-
-  # =============================================
-  # 배치 컨테이너 (매주 월요일 오전 6시 자동 실행)
-  # =============================================
-  batch:
-    build: .
-    container_name: jeonse_batch
+  # Neo4j Graph DB
+  neo4j:
+    image: neo4j:5-community
+    container_name: jeonse_neo4j
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: jeonse_risk
-      DB_USER: postgres
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-jeonse1234}
+      NEO4J_PLUGINS: '[]'
+    ports:
+      - "7474:7474"   # 브라우저 UI
+      - "7687:7687"   # Bolt 프로토콜
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./docs:/app/docs
-    depends_on:
-      db:
-        condition: service_healthy
-    command: ["cron", "-f"]
+      - neo4j_data:/data
 
 volumes:
   postgres_data:
+  neo4j_data:

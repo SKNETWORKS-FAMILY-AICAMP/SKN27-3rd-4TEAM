@@ -15,7 +15,6 @@ from utils.components import emergency_widget
 from utils.styles import GLOBAL_CSS
 import views.chat as chat
 import views.checklist as checklist
-import views.dashboard as dashboard
 import views.history as history
 import views.home as home
 import views.market as market
@@ -36,12 +35,12 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
 VIEWS = {
     "home": {"label": "홈", "icon": "🏠", "badge": None, "render": home.render},
-    "dashboard": {"label": "홈", "icon": "🏠", "badge": None, "render": dashboard.render},
-    "chat": {"label": "AI 안심 상담", "icon": "💬", "badge": None, "render": chat.render},
-    "cases": {"label": "유사 사례 및 판례 찾기", "icon": "⚖️", "badge": None, "render": playbook.render_cases},
+    "chat": {"label": "지금 매물 진단", "icon": "💬", "badge": None, "render": chat.render},
+    "cases": {"label": "사례·판례", "icon": "⚖️", "badge": None, "render": playbook.render_cases},
     "checklist": {"label": "안전 체크리스트", "icon": "✅", "badge": None, "render": checklist.render},
-    "history": {"label": "내 진단 기록", "icon": "📋", "badge": "6", "render": history.render},
-    "playbook": {"label": "피해 대응 안내", "icon": "🛡️", "badge": None, "render": playbook.render},
+    "history": {"label": "내 진단 기록", "icon": "📋", "badge": None, "render": history.render},
+    # "simulator": {"label": "깡통전세 시뮬레이터", "icon": "📊", "badge": None, "render": simulator.render},
+    "playbook": {"label": "피해 대응 안내", "icon": "🆘", "badge": None, "render": playbook.render},
     "market": {"label": "지역 시세", "icon": "📍", "badge": None, "render": market.render},
     "property": {"label": "최근 확인 매물", "icon": "🏠", "badge": None, "render": property.render},
 }
@@ -58,24 +57,21 @@ if st.session_state.current_view != "home":
     with st.sidebar:
         st.markdown(
             """
-            <a class="side-brand-link" href="?view=home" target="_self" aria-label="홈으로 돌아가기">
-              <div class="side-brand">
-                <div style="display:flex;align-items:center;gap:10px">
-                  <div class="side-logo">🏠</div>
-                  <div>
-                    <div class="side-title">나만의 전세 계약</div>
-                    <div class="side-sub">전세사기 진단 서비스</div>
-                  </div>
+            <div class="side-brand">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div class="side-logo">🏠</div>
+                <div>
+                  <div class="side-title">안전계약</div>
+                  <div class="side-sub">전세사기 진단 서비스</div>
                 </div>
               </div>
-            </a>
+            </div>
             """,
             unsafe_allow_html=True,
         )
 
         for key, view in VIEWS.items():
-            if key in ("property", "home"):
-                # property: 사이드바에 별도 카드로 노출. home: 로딩 페이지(타이틀 클릭/초기 진입 전용)
+            if key == "property":
                 continue
             is_active = st.session_state.current_view == key
             if st.button(
@@ -94,20 +90,34 @@ if st.session_state.current_view != "home":
             'letter-spacing:.08em;margin:8px 0 8px">최근 확인 매물</div>',
             unsafe_allow_html=True,
         )
-        st.markdown(
-            """
-            <a class="prop-mini prop-mini-link" href="?view=property" target="_self" aria-label="최근 확인 매물 상세 보기">
-              <div class="ttl">종로구 명륜2가 세빛빌라 302호</div>
-              <div class="sub">전세 2.5억 · 42㎡ · 2018년식</div>
-              <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
-                <span style="width:10px;height:10px;border-radius:50%;background:var(--red);
-                             box-shadow:0 0 0 3px var(--red-soft);display:inline-block"></span>
-                <b style="color:var(--red);font-size:12px">위험 78점</b>
-              </div>
-            </a>
-            """,
-            unsafe_allow_html=True,
-        )
+        if st.session_state.get("diagnosis_done") and st.session_state.get("report"):
+            rpt = st.session_state.report
+            ui = rpt.get("user_info", {})
+            addr = ui.get("address", "진단 대기 중")
+            dep = ui.get("deposit", 0)
+            area = ui.get("area_m2", "")
+            risk = ui.get("risk_level", "미상")
+            score = ui.get("risk_score", 0)
+            color = "var(--red)" if risk == "위험" else ("var(--amber)" if risk == "주의" else "var(--green)")
+            st.markdown(
+                f"""
+                <div class="prop-mini">
+                  <div class="ttl">{addr}</div>
+                  <div class="sub">전세 {dep:,}만원{f' · {area}㎡' if area else ''}</div>
+                  <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+                    <span style="width:10px;height:10px;border-radius:50%;background:{color};
+                                 box-shadow:0 0 0 3px {color}33;display:inline-block"></span>
+                    <b style="color:{color};font-size:12px">{risk} {score}점</b>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="prop-mini"><div class="ttl" style="color:var(--gray-500)">진단 대기 중</div></div>',
+                unsafe_allow_html=True,
+            )
 
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         emergency_widget()
