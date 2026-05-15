@@ -201,10 +201,11 @@ flowchart TD
     DASH --> CHAT[💬 AI 상담]
     DASH --> PROP[🔍 매물 진단]
     DASH --> MARKET[📈 지역 시세]
-    PROP --> SIM[🎲 회수율 시뮬레이터]
+    DASH --> CASES[📚 사례·판례]
     PROP --> HIST[📁 진단 기록]
+    HIST --> CHAT[💬 AI 상담]
     HIST --> COMPARE[⚖️ 매물 비교]
-    CHAT --> CASES[📚 사례·판례]
+    CASES --> CHAT[💬 AI 상담]
     DASH --> CHECK[✅ 체크리스트]
     DASH --> PLAY[🆘 피해 대응 플레이북]
 ```
