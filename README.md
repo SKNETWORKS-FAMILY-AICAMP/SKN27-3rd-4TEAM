@@ -75,6 +75,7 @@ flowchart LR
 ### 4-1. 시퀀스 다이어그램 
 
 #### 1. 계약서 진단 파이프라인 (LangGraph 워크플로우)
+<<<<<<< HEAD
 ![Contract_Pipeline.png](images/Contract_Pipeline.png)
 
 #### 2. AI 챗봇 상담 흐름
@@ -88,6 +89,18 @@ flowchart LR
 
 ### 4-2. ERD
 ![erd_schema](images/erd_schema.png)
+=======
+<img src="https://cdn.discordapp.com/attachments/1499035844852318293/1504700553274593350/71c14c1fc8ebeb29.png?ex=6a07f117&is=6a069f97&hm=0201f55270db71af0966e599c0d8e6b8368892715c46b340a81c3f88f72bd5ff&" width="1000">
+
+#### 2. AI 챗봇 상담 흐름
+<img src="https://cdn.discordapp.com/attachments/1499035844852318293/1504700709075943434/AI_.png?ex=6a07f13d&is=6a069fbd&hm=bea38eebb18ad89a0d42671375863e1e9bd69c19c402e156ad2aaf371b521fef&" width="1000">
+
+#### 3. 그래프 빌드 (오프라인 1회)
+<img src="https://cdn.discordapp.com/attachments/1499035844852318293/1504700780865785947/2f6db456dffb36be.png?ex=6a07f14e&is=6a069fce&hm=a249e66908a1eae5e37bb9c9e7b77b5e794fe9d94b5826585ab9e0c55046b3f5&" width="1000">
+
+### 4-2. ERD
+<img src="https://cdn.discordapp.com/attachments/1499035844852318293/1504682840384868352/erd_schema.png?ex=6a07e098&is=6a068f18&hm=9bef5a5ec0ab79e01cb2640017e140a6cd23ed3228d64be591dda0e714393007&" width="1000">
+>>>>>>> 3756a0286df76ecfd8a41faf5b49e2d532f5d6eb
 
 ---
 
