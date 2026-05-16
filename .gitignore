@@ -36,4 +36,4 @@ dist/
 *.egg-info/
 
 # 진단 결과
-results/
+reports/
