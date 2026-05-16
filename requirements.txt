@@ -1,0 +1,33 @@
+# LLM / Agent
+langchain>=0.3.0
+langchain-openai>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.3.0
+openai>=1.0.0
+
+# PDF / DOCX
+pymupdf>=1.25.0
+python-docx>=1.0.0
+
+# DB (pgvector)
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+pgvector>=0.3.0
+
+# Data
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Embeddings
+sentence-transformers>=3.0.0
+
+# Graph DB
+neo4j>=5.0.0
+
+# Visualization
+plotly>=5.0.0
+
+# App
+streamlit>=1.30.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
